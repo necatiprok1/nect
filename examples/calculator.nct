@@ -1,0 +1,339 @@
+// examples/calculator.nct — Nect ile yazılmış uçbirim hesap makinesi.
+//
+// Çalıştır:  ./target/release/nect run examples/calculator.nct
+//
+// Kullanım:  bir ifade yaz ve Enter'a bas (ör. 3 + 4 * (2 - 1) ^ 2).
+//            c = temizle · h = geçmişi göster · q = çık
+//
+// İfadede desteklenenler: + - * / % ^, parantezler, unary -, ondalıklı sayılar.
+// Çözümleyici tamamen Nect'te yazıldı: karakter karakter tarar, öncelik
+// kurallarına göre ayrıştırır ve kendi içinde değerlendirir — dilin `num()`
+// dönüşümüne ve hata yakalamaya ihtiyacı yoktur; her girdi önce doğrulanır.
+
+// ─────────────────────────────────────────────────────────────
+// Yardımcılar
+// ─────────────────────────────────────────────────────────────
+
+fn is_digit(c) {
+    return char_code(c) >= 48 and char_code(c) <= 57
+}
+
+// Sayıyı ekran genişliğine sığacak biçimde yaz: tam sayıysa noktasız,
+// değilse 12 basamağa yazıp sondaki sıfırları kırp.
+fn fmt_num(n) {
+    if n == int(n) and abs(n) < 1e15 {
+        return str(int(n))
+    }
+    let text = fixed(n, 12)
+    while len(text) > 0 and text[len(text) - 1] == "0" {
+        text = slice(text, 0, len(text) - 1)
+    }
+    if len(text) > 0 and text[len(text) - 1] == "." {
+        text = slice(text, 0, len(text) - 1)
+    }
+    return text
+}
+
+fn pad(s, width) {
+    let out = s
+    while len(out) < width {
+        out = out + " "
+    }
+    return out
+}
+
+// ─────────────────────────────────────────────────────────────
+// 1. Aşama: karakter karakter tarayıcı (tokenizer)
+// ─────────────────────────────────────────────────────────────
+
+// Girdiyi sayı ve işaret dizilerine ayırır. Sorun olursa
+// {ok: false, err: mesaj} döner; böylece program hiçbir zaman yarıda çökmez.
+fn tokenize(src) {
+    let tokens = []
+    let i = 0
+    while i < len(src) {
+        let c = src[i]
+        if c == " " {
+            i += 1
+        } else if is_digit(c) or c == "." {
+            let start = i
+            let dots = 0
+            while i < len(src) and (is_digit(src[i]) or src[i] == ".") {
+                if src[i] == "." {
+                    dots += 1
+                }
+                i += 1
+            }
+            if dots > 1 {
+                return {ok: false, err: concat("geçersiz sayı: '", slice(src, start, i), "'")}
+            }
+            push(tokens, slice(src, start, i))
+        } else if contains("+-*/%^()", c) {
+            push(tokens, c)
+            i += 1
+        } else {
+            return {ok: false, err: concat("geçersiz karakter: '", c, "'")}
+        }
+    }
+    return {ok: true, tokens: tokens}
+}
+
+// "12.5" gibi bir sayı dizgisini çarparak 12.5'e çevirir. `num()` yerine
+// elle: hatalı girdi tarayıcıda elenmiş oldu, burada artık patlama yok.
+fn parse_number(t) {
+    let whole = 0.0
+    let i = 0
+    while i < len(t) and t[i] != "." {
+        whole = whole * 10 + (char_code(t[i]) - 48)
+        i += 1
+    }
+    if i == len(t) {
+        return whole
+    }
+    i += 1
+    let frac = 0.0
+    let scale = 1.0
+    while i < len(t) {
+        scale = scale / 10
+        frac = frac + (char_code(t[i]) - 48) * scale
+        i += 1
+    }
+    return whole + frac
+}
+
+// ─────────────────────────────────────────────────────────────
+// 2. Aşama: öncelikli ayrıştırıcı + değerlendirici
+// ─────────────────────────────────────────────────────────────
+//
+// Öncelik (düşükten yükseğe):  + -   ·   * / %   ·   unary -   ·   ^
+// `^` sağa birleşiktir: 2^3^2 == 512. Durum, referans özelliğinden
+// yararlanarak bir map içinde taşınır — iç fonksiyonlar st.pos'u ilerletir
+// ve dışarıdaki fonksiyon aynı konumu görür.
+
+fn peek(st) {
+    if st.pos < len(st.tokens) {
+        return st.tokens[st.pos]
+    }
+    return null
+}
+
+fn parse_primary(st) {
+    let t = peek(st)
+    if t == null {
+        return {ok: false, err: "eksik ifade"}
+    }
+    if t == "(" {
+        st.pos += 1
+        let inner = parse_expr(st)
+        if inner.ok == false {
+            return inner
+        }
+        if peek(st) != ")" {
+            return {ok: false, err: "kapanmamış parantez"}
+        }
+        st.pos += 1
+        return inner
+    }
+    if is_digit(t[0]) or t[0] == "." {
+        st.pos += 1
+        return {ok: true, val: parse_number(t)}
+    }
+    return {ok: false, err: concat("beklenmeyen '", t, "'")}
+}
+
+fn parse_pow(st) {
+    let base = parse_primary(st)
+    if base.ok == false {
+        return base
+    }
+    if peek(st) == "^" {
+        st.pos += 1
+        let exponent = parse_unary(st)
+        if exponent.ok == false {
+            return exponent
+        }
+        return {ok: true, val: pow(base.val, exponent.val)}
+    }
+    return base
+}
+
+fn parse_unary(st) {
+    if peek(st) == "-" {
+        st.pos += 1
+        let value = parse_unary(st)
+        if value.ok == false {
+            return value
+        }
+        return {ok: true, val: 0 - value.val}
+    }
+    if peek(st) == "+" {
+        st.pos += 1
+        return parse_unary(st)
+    }
+    return parse_pow(st)
+}
+
+fn parse_term(st) {
+    let left = parse_unary(st)
+    if left.ok == false {
+        return left
+    }
+    while true {
+        let t = peek(st)
+        if t != "*" and t != "/" and t != "%" {
+            break
+        }
+        st.pos += 1
+        let right = parse_unary(st)
+        if right.ok == false {
+            return right
+        }
+        if t == "*" {
+            left.val = left.val * right.val
+        } else if t == "/" {
+            if right.val == 0 {
+                return {ok: false, err: "sıfıra bölme"}
+            }
+            left.val = left.val / right.val
+        } else {
+            if right.val == 0 {
+                return {ok: false, err: "sıfıra göre mod"}
+            }
+            left.val = left.val % right.val
+        }
+    }
+    return left
+}
+
+fn parse_expr(st) {
+    let left = parse_term(st)
+    if left.ok == false {
+        return left
+    }
+    while true {
+        let t = peek(st)
+        if t != "+" and t != "-" {
+            break
+        }
+        st.pos += 1
+        let right = parse_term(st)
+        if right.ok == false {
+            return right
+        }
+        if t == "+" {
+            left.val = left.val + right.val
+        } else {
+            left.val = left.val - right.val
+        }
+    }
+    return left
+}
+
+// Tam yol: dizgi → dizgecikler → ağaç gezintisi → tek sayı.
+fn evaluate(src) {
+    let lexed = tokenize(src)
+    if lexed.ok == false {
+        return lexed
+    }
+    if len(lexed.tokens) == 0 {
+        return {ok: false, err: "boş ifade"}
+    }
+    let st = {tokens: lexed.tokens, pos: 0}
+    let result = parse_expr(st)
+    if result.ok == false {
+        return result
+    }
+    if st.pos < len(st.tokens) {
+        return {ok: false, err: concat("beklenmeyen '", st.tokens[st.pos], "'")}
+    }
+    return result
+}
+
+// ─────────────────────────────────────────────────────────────
+// 3. Aşama: arayüz
+// ─────────────────────────────────────────────────────────────
+
+fn draw(expr, last, history) {
+    let esc = char(27)
+    let out = esc + "[2J" + esc + "[H"          // ekranı temizle, imleci başa al
+    out += "╔══════════════════════════════════════╗\n"
+    out += "║        NECT HESAP MAKİNESİ           ║\n"
+    out += "╚══════════════════════════════════════╝\n"
+    out += "┌──────────────────────────────────────┐\n"
+    out += "│ ifade : " + pad(expr, 30) + " │\n"
+    out += "│ " + pad(last, 36) + " │\n"
+    out += "└──────────────────────────────────────┘\n"
+    out += "   ┌─────┬─────┬─────┬─────┐\n"
+    out += "   │  7  │  8  │  9  │  ÷  │\n"
+    out += "   ├─────┼─────┼─────┼─────┤\n"
+    out += "   │  4  │  5  │  6  │  ×  │\n"
+    out += "   ├─────┼─────┼─────┼─────┤\n"
+    out += "   │  1  │  2  │  3  │  −  │\n"
+    out += "   ├─────┼─────┼─────┼─────┤\n"
+    out += "   │  0  │  .  │  =  │  +  │\n"
+    out += "   └─────┴─────┴─────┴─────┘\n"
+    out += "   destekli: + - * / % ^  ( )  unary -\n"
+
+    if len(history) > 0 {
+        out += "   son işlemler:\n"
+        let first = len(history) - 3
+        if first < 0 {
+            first = 0
+        }
+        let i = first
+        while i < len(history) {
+            out += "     " + history[i] + "\n"
+            i += 1
+        }
+    }
+
+    out += " komut: ifade yaz + Enter · c temizle · h geçmiş · q çık\n"
+    print(out)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Ana döngü
+// ─────────────────────────────────────────────────────────────
+
+let expr = ""
+let last = "hoş geldin! bir ifade yaz."
+let history = []
+
+while true {
+    draw(expr, last, history)
+    let line = input("> ")
+    if line == null {
+        break                                    // girdi bitti (EOF)
+    }
+    let cmd = trim(line)
+    if cmd == "q" or cmd == "Q" {
+        break
+    }
+    if cmd == "c" {
+        expr = ""
+        last = "temizlendi."
+        continue
+    }
+    if cmd == "h" {
+        if len(history) == 0 {
+            last = "geçmiş boş."
+        } else {
+            last = concat("geçmişte ", str(len(history)), " işlem var (aşağıda)")
+        }
+        continue
+    }
+    if cmd == "" {
+        continue
+    }
+
+    expr = cmd
+    let result = evaluate(cmd)
+    if result.ok {
+        last = "= " + fmt_num(result.val)
+        push(history, concat(cmd, " = ", fmt_num(result.val)))
+    } else {
+        last = "hata: " + result.err
+    }
+}
+
+print("Görüşürüz!")

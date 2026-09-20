@@ -1,0 +1,22 @@
+// Taylor series: compute e^x using the series expansion
+// e^x = sum_{k=0}^{inf} x^k / k!
+// The iterative form avoids division: term_k = term_{k-1} * x / k
+// Division by k is used here (this stays in bytecode for Nect, making
+// a fair comparison between VM and Python on a numerically identical workload).
+// AI-relevant: Taylor series approximate activation functions, softmax,
+// and probability distributions in ML.
+
+fn taylor_exp(x, terms) {
+    let sum = 0.0
+    let term = 1.0
+    let k = 1
+    while (k <= terms) {
+        sum = sum + term
+        term = term * x / k
+        k = k + 1
+    }
+    return sum
+}
+
+let result = taylor_exp(10.0, 100000)
+print("taylor exp: " + str(result))

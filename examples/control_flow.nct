@@ -1,0 +1,73 @@
+// Control flow in Nect: conditionals, loops, and the loop keywords.
+//
+// Run it with:  nect run examples/control_flow.nct
+
+// --- if / else if / else ---------------------------------------------------
+// A conditional expression (`? :`) is handy when both branches produce a value.
+let score = 87
+
+if (score >= 90) {
+    print("grade: A")
+} else if (score >= 80) {
+    print("grade: B")
+} else if (score >= 70) {
+    print("grade: C")
+} else {
+    print("grade: F")
+}
+
+let verdict = score >= 70 ? "pass" : "fail"
+print("verdict: " + verdict)
+
+// --- while with break and continue ----------------------------------------
+// `continue` jumps to the next iteration, `break` leaves the loop.
+let n = 10
+let result = 1
+let i = 1
+
+while (i <= n) {
+    result *= i
+    if (i == 4) {
+        print("processed up to " + str(i))
+    }
+    i += 1
+}
+
+print(str(n) + "! = " + str(result))
+
+// Stop as soon as the running total passes a limit.
+let limit = 20
+let total = 0
+let k = 1
+while (true) {
+    if (k % 2 == 0) {
+        k += 1
+        continue
+    }
+    total += k
+    if (total > limit) {
+        print("first odd total over " + str(limit) + " is " + str(total))
+        break
+    }
+    k += 1
+}
+
+// --- for over an array ----------------------------------------------------
+let words = ["alpha", "beta", "gamma", "delta"]
+
+for word in words {
+    if (len(word) <= 4) {
+        continue
+    }
+    print(upper(word))
+}
+
+// --- an infinite loop guarded by break ------------------------------------
+let guess = 0
+while (true) {
+    guess += 7
+    if (guess % 5 == 0) {
+        break
+    }
+}
+print("first multiple of 7 that is also a multiple of 5: " + str(guess))

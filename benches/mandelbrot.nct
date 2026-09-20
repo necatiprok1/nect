@@ -1,0 +1,49 @@
+// Mandelbrot set: escape-time fractal computation
+// AI-relevant: procedural content generation, generative models, fractal rendering
+// The inner mandelbrot() function has a loop and is called from a loop,
+// so it is JIT-compiled. The module prefix (nested grid loops) is also JIT-compiled.
+
+fn mandelbrot(cx, cy, max_iter) {
+    let x = 0.0
+    let y = 0.0
+    let i = 0
+    let xx = 0.0
+    let yy = 0.0
+    let xy = 0.0
+    while (i < max_iter) {
+        xx = x * x
+        yy = y * y
+        if (xx + yy > 4.0) {
+            return i
+        }
+        xy = x * y
+        y = 2.0 * xy + cy
+        x = xx - yy + cx
+        i = i + 1
+    }
+    return max_iter
+}
+
+let width = 80
+let height = 80
+let max_iter = 100
+let total = 0
+let bx = -2.0
+let by = -1.5
+let sx = 0.0375
+let sy = 0.0375
+let ix = 0
+let iy = 0
+let cx = 0.0
+let cy = 0.0
+while (ix < width) {
+    while (iy < height) {
+        cx = bx + ix * sx
+        cy = by + iy * sy
+        total = total + mandelbrot(cx, cy, max_iter)
+        iy = iy + 1
+    }
+    iy = 0
+    ix = ix + 1
+}
+print("mandelbrot total iterations: " + str(total))
