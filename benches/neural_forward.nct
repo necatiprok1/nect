@@ -1,0 +1,36 @@
+// Neural network forward pass: simulates the dot-product layer that is the
+// core of neural network inference. Without arrays, each neuron computes
+// a weighted sum over computed inputs, and the layer is simulated by a
+// loop calling the dot_product function.
+// AI-relevant: dot products are the fundamental operation in dense layers,
+// attention mechanisms (QKV), and convolutions.
+
+fn dot_product(n_inputs, a_scale, b_scale) {
+    let sum = 0.0
+    let i = 0
+    let a = 0.0
+    let b = 0.0
+    while (i < n_inputs) {
+        a = a_scale + i * 0.001
+        b = b_scale + i * 0.002
+        sum = sum + a * b
+        i = i + 1
+    }
+    return sum
+}
+
+let layers = 20
+let neurons = 50
+let n_inputs = 200
+let total = 0.0
+let layer = 0
+let neuron = 0
+while (layer < layers) {
+    while (neuron < neurons) {
+        total = total + dot_product(n_inputs, layer * 0.1, neuron * 0.1)
+        neuron = neuron + 1
+    }
+    neuron = 0
+    layer = layer + 1
+}
+print("neural forward total: " + str(total))

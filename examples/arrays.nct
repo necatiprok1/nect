@@ -1,0 +1,77 @@
+// Nect arrays: a growable, indexed sequence of any values.
+//
+// Run it with:  nect run examples/arrays.nct
+
+let primes = [2, 3, 5, 7, 11]
+print(primes)
+print("count: " + str(len(primes)))
+
+// --- indexing -------------------------------------------------------------
+// Negative indices count from the end; an out-of-range index is an error.
+print("first: " + str(primes[0]))
+print("last: " + str(primes[-1]))
+print("second to last: " + str(primes[-2]))
+
+// --- updating elements ----------------------------------------------------
+let scores = [10, 20, 30]
+scores[0] = 99
+scores[1] += 5
+scores[-1] *= 2
+print("updated: " + str(scores))
+// Assignment is an expression, so it can be used in place of a value.
+print("stored: " + str(scores[0] = 1))
+print(scores)
+
+// --- growing and shrinking ------------------------------------------------
+let stack = []
+push(stack, "a")
+push(stack, "b", "c")
+print("stack: " + str(stack))
+print("popped: " + pop(stack))
+print("stack: " + str(stack))
+
+// --- iterating ------------------------------------------------------------
+let total = 0
+for value in scores {
+    total += value
+}
+print("total: " + str(total))
+
+// `for` walks a snapshot of the length, so the loop variable is a copy.
+for value in [1, 2, 3] {
+    value *= 10
+    print("copy: " + str(value))
+}
+
+// --- whole-array helpers --------------------------------------------------
+let data = [3, 1, 4, 1, 5, 9, 2, 6]
+print("sorted: " + str(sort(data)))
+print("reversed: " + str(reverse(data)))
+print("sum: " + str(sum(data)))
+print("min: " + str(min(data)) + ", max: " + str(max(data)))
+print("first index of 1: " + str(index_of(data, 1)))
+print("contains 4: " + str(contains(data, 4)))
+print("joined: " + join(data, "-"))
+print("slice: " + str(slice(data, 2, 5)))
+
+// --- mixed values and nesting --------------------------------------------
+// Arrays hold any values, including other arrays.
+let record = [1, "two", true, null, [3, 4]]
+print(record)
+print("nested: " + str(record[4][1]))
+
+let grid = [[1, 2], [3, 4]]
+grid[1][0] += 10
+print("grid: " + str(grid))
+
+// Sorting needs comparable values: all numbers or all strings.
+print("sorted words: " + str(sort(["pear", "apple", "fig"])))
+
+// --- building with range() ------------------------------------------------
+// `range(stop)` counts from 0; `range(start, stop, step)` is the general form.
+let squares = []
+for n in range(1, 6) {
+    push(squares, n * n)
+}
+print("squares: " + str(squares))
+print("countdown: " + str(range(5, 0, -1)))

@@ -1,0 +1,52 @@
+// Nect strings: indexing, slicing, searching, and transforming.
+//
+// Run it with:  nect run examples/strings.nct
+
+let greeting = "Hello"
+let target = "Nect"
+let message = greeting + ", " + target + "!"
+
+print(message)
+print("length: " + str(len(message)))
+
+// --- indexing -------------------------------------------------------------
+// `s[i]` is a one-character string; negative indices count from the end.
+print("first: " + message[0])
+print("last: " + message[-1])
+print("middle: " + message[-4])
+
+// --- slicing --------------------------------------------------------------
+// slice(x, start, end) is half-open; either index may be negative.
+print("head: " + slice(message, 0, 5))
+print("tail: " + slice(message, -4))
+print("chopped: " + slice(message, 1, -1))
+
+// --- searching and replacing ---------------------------------------------
+print("index of Nect: " + str(index_of(message, "Nect")))
+print("missing: " + str(index_of(message, "z")))
+print("contains 'lo,': " + str(contains(message, "lo,")))
+print(replace(message, "Nect", "World"))
+
+// --- case and whitespace --------------------------------------------------
+print(upper(message))
+print(lower(message))
+print("trimmed: [" + trim("   padded   ") + "]")
+
+// --- splitting and joining ------------------------------------------------
+let csv = "north,east,south,west"
+let parts = split(csv, ",")
+print(parts)
+print("fields: " + str(len(parts)))
+
+for part in parts {
+    print("  " + upper(part))
+}
+
+print(join(reverse(parts), " | "))
+print(repeat("=", 12))
+
+// --- numbers and strings --------------------------------------------------
+let quantity = num("42")
+let price = 1.5
+print("total: " + str(quantity * price))
+print(str(7) + " is a " + type(7))

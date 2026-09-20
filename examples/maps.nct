@@ -1,0 +1,55 @@
+// Maps: key/value collections that keep their insertion order.
+//
+// A map literal is {key: value, ...}. A bare identifier key is the string of
+// the same name, so {name: "Ada"} is {"name": "Ada"} — the quotes are optional
+// for keys that look like identifiers.
+
+let ages = {ada: 36, linus: 25, grace: 39}
+print(ages)                 // {"ada": 36, "linus": 25, "grace": 39}
+print(len(ages))            // 3
+
+// Read with dot syntax or with brackets.
+print(ages.ada)             // 36
+print(ages["linus"])        // 25
+
+// Write the same two ways; plain assignment inserts or overwrites.
+ages.ada = 37
+ages["hopper"] = 85
+print(ages)
+
+// Compound assignment needs the key to exist: it reads before writing.
+ages.ada += 1
+
+// Keys may be any string, number, or boolean.
+let mixed = {1: "one", true: "yes"}
+print(mixed[1], mixed[true])    // one yes
+
+// Nest maps and arrays freely; chains read left to right.
+let team = {
+    lead: {name: "ada", score: 91},
+    members: ["linus", "grace"],
+}
+print("${team.lead.name}: ${team.lead.score}")  // ada: 91
+print(team.members.len())                        // 2
+
+// Iterating a map visits its keys in insertion order.
+for name in ages {
+    print("${name} is ${ages[name]}")
+}
+
+// The map library: keys, values, has, remove.
+print(keys(ages))
+print(values(ages))
+print(has(ages, "linus"), has(ages, "nobody"))
+
+let gone = remove(ages, "linus")
+print(gone, len(ages))
+print(remove(ages, "linus"))    // null: removing a missing key is fine
+
+// Reading a missing key is an error; ask with has() first.
+let settings = {}
+if has(settings, "debug") {
+    print(settings.debug)
+} else {
+    print("no debug setting yet")       // no debug setting yet
+}

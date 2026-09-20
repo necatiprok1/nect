@@ -1,0 +1,19 @@
+// String interpolation: put any expression inside ${...}.
+let name = "Ada"
+let year = 2026
+print("Hello, ${name}! Welcome to ${year}.")
+print("2 + 2 is ${2 + 2}, and 2 + 2 > 3 is ${2 + 2 > 3}")
+
+// Methods: value.method(args) is sugar for method(value, args).
+let items = [3, 1, 2]
+print("count: ${items.len()}")
+print("sorted: ${sort(items).join(", ")}")
+print("shout: ${"quiet".upper()}")
+
+// Word operators read like English; && || ! still work.
+let age = 20
+let has_ticket = true
+if age >= 18 and has_ticket {
+    print("enjoy the show")
+}
+print(not has_ticket, age < 18 or has_ticket)

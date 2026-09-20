@@ -1,0 +1,65 @@
+// Nect functions: parameters, recursion, and returning early.
+//
+// Run it with:  nect run examples/functions.nct
+
+fn factorial(n) {
+    if (n <= 1) {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+fn greet(name) {
+    print("Hello, " + name + "!")
+}
+
+// A function may declare its own helper and call it.
+fn describe(n) {
+    fn kind(x) {
+        return x % 2 == 0 ? "even" : "odd"
+    }
+    return str(n) + " is " + kind(n)
+}
+
+// Early `return` from inside a loop searches a collection.
+fn first_negative(items) {
+    for item in items {
+        if (item < 0) {
+            return item
+        }
+    }
+    return 0
+}
+
+// Parameters are copies, so mutating one does not touch the caller.
+// Arrays are shared, so appending to one does.
+fn append_twice(items, count) {
+    push(items, count)
+    push(items, count * 2)
+    count += 100
+    return count
+}
+
+greet("Nect")
+print("factorial(5) = " + str(factorial(5)))
+print("factorial(20) = " + str(factorial(20)))
+print(describe(7))
+print(describe(8))
+print("first negative: " + str(first_negative([3, 5, -2])))
+print("no negatives: " + str(first_negative([1, 2, 3])))
+
+let shared = []
+let returned = append_twice(shared, 3)
+print("caller's array: " + str(shared))
+print("caller's count: 3, callee's count: " + str(returned))
+
+// A function is a named subroutine, not a value: the VM resolves calls while
+// compiling, so `print(factorial)` is an error. Call it instead.
+print("recursion depth:")
+fn down(n) {
+    if (n <= 0) {
+        return 0
+    }
+    return 1 + down(n - 1)
+}
+print("down(100) = " + str(down(100)))

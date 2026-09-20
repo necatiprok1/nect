@@ -1,0 +1,34 @@
+# Squared distances from 100000 query points to 128-dimensional centroids
+# (307M multiply-adds), with the distance loop unrolled four ways.
+# AI-relevant: this is the scoring loop of k-NN retrieval and of vector
+# databases; it is also the loop k-means runs until convergence.
+def squared_distance(dim, query, centroid):
+    s0 = 0.0
+    s1 = 0.0
+    s2 = 0.0
+    s3 = 0.0
+    i = 0
+    while i < dim:
+        d = query + i * 0.001 - (centroid + i * 0.002)
+        s0 = s0 + d * d
+        d = query + (i + 1) * 0.001 - (centroid + (i + 1) * 0.002)
+        s1 = s1 + d * d
+        d = query + (i + 2) * 0.001 - (centroid + (i + 2) * 0.002)
+        s2 = s2 + d * d
+        d = query + (i + 3) * 0.001 - (centroid + (i + 3) * 0.002)
+        s3 = s3 + d * d
+        i = i + 4
+    return s0 + s1 + s2 + s3
+
+dim = 128
+queries = 100000
+centroids = 24
+best = 0.0
+q = 0
+while q < queries:
+    c = 0
+    while c < centroids:
+        best = best + squared_distance(dim, q * 0.01, c * 0.1)
+        c = c + 1
+    q = q + 1
+print(f"knn distance total: {best}")

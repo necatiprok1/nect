@@ -1,0 +1,64 @@
+// Prime numbers with the sieve of Eratosthenes.
+//
+// Run it with:  nect run examples/primes.nct
+
+fn sieve(limit) {
+    // `true` means "still believed prime".
+    let is_prime = []
+    for i in range(limit + 1) {
+        push(is_prime, true)
+    }
+    is_prime[0] = false
+    is_prime[1] = false
+
+    for candidate in range(2, limit + 1) {
+        if (!is_prime[candidate]) {
+            continue
+        }
+        // Cross out the multiples. Only go up to the square root.
+        if (candidate * candidate > limit) {
+            break
+        }
+        let multiple = candidate * candidate
+        while (multiple <= limit) {
+            is_prime[multiple] = false
+            multiple += candidate
+        }
+    }
+
+    let found = []
+    for i in range(limit + 1) {
+        if (is_prime[i]) {
+            push(found, i)
+        }
+    }
+    return found
+}
+
+let primes = sieve(100)
+print("primes up to 100: " + str(primes))
+print("count: " + str(len(primes)))
+print("sum: " + str(sum(primes)))
+
+// A divisibility test that stops at the first factor.
+fn is_prime(n) {
+    if (n < 2) {
+        return false
+    }
+    let divisor = 2
+    while (divisor * divisor <= n) {
+        if (n % divisor == 0) {
+            return false
+        }
+        divisor += 1
+    }
+    return true
+}
+
+let twin_pairs = []
+for n in range(3, 100) {
+    if (is_prime(n) && is_prime(n + 2)) {
+        push(twin_pairs, str(n) + "/" + str(n + 2))
+    }
+}
+print("twin primes below 100: " + join(twin_pairs, ", "))
