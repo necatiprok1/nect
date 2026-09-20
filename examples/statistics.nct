@@ -1,0 +1,50 @@
+// Descriptive statistics over a small data set.
+//
+// Run it with:  nect run examples/statistics.nct
+
+let samples = [12, 7, 3, 19, 7, 25, 4, 11]
+
+fn mean(values) {
+    return sum(values) / len(values)
+}
+
+fn median(values) {
+    // `sort` works in place, so copy first to leave the caller's array alone.
+    let ordered = slice(values, 0)
+    sort(ordered)
+    let middle = len(ordered) / 2
+    if (len(ordered) % 2 == 0) {
+        return (ordered[middle - 1] + ordered[middle]) / 2
+    }
+    return ordered[middle]
+}
+
+fn variance(values) {
+    let average = mean(values)
+    let total = 0
+    for value in values {
+        total += pow(value - average, 2)
+    }
+    return total / len(values)
+}
+
+print("samples: " + str(samples))
+print("count:   " + str(len(samples)))
+print("sum:     " + str(sum(samples)))
+print("mean:    " + str(mean(samples)))
+print("median:  " + str(median(samples)))
+print("min:     " + str(min(samples)))
+print("max:     " + str(max(samples)))
+print("range:   " + str(max(samples) - min(samples)))
+
+let spread = variance(samples)
+let sd = sqrt(spread)
+print("variance:     " + str(round(spread * 1000) / 1000))
+print("std deviation: " + str(round(sd * 1000) / 1000))
+
+// The original array is unchanged even though `median` sorted a copy.
+print("unchanged: " + str(samples))
+
+// Numbers round-trip through strings.
+assert(num(str(len(samples))) == len(samples), "round trip")
+print("checked: " + str(len(samples)) + " samples")

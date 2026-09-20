@@ -1,0 +1,19 @@
+// Geometric series: discounted return sum in reinforcement learning.
+// D = sum_{t=0}^{T} gamma^t (reward=1), equivalent to geometric_sum(gamma, T+1).
+// The iterative form term_k = term_{k-1} * gamma avoids division entirely.
+// AI-relevant: discounted return is the foundation of value functions and
+// policy gradient methods in RL.
+
+fn geometric_sum(gamma, n) {
+    let sum = 0.0
+    let term = 1.0
+    while (n > 0) {
+        sum = sum + term
+        term = term * gamma
+        n = n - 1
+    }
+    return sum
+}
+
+let result = geometric_sum(0.9999, 2000000)
+print("geometric sum: " + str(result))

@@ -1,0 +1,107 @@
+// std/ui.nct — Nect standard UI library (embedded in the binary).
+//
+// A tiny toolkit for building graphical applications that run in the system
+// browser. A Nect program composes the page as values, `ui_open` writes it to
+// a file and asks the OS to open it — no server, no install, no waiting.
+//
+//     import "std/ui.nct"
+//     ui_open("Hello", ui_title("Hello, Nect!") + "<p>It works.</p>")
+//
+// The functions below only build strings; `ui_open` is the only one with side
+// effects. Pages are single files: the app's interactivity lives in the HTML,
+// CSS, and JavaScript you compose — this library provides the shell and the
+// widgets around it.
+
+// ─────────────────────────────────────────────────────────────
+// Page shell
+// ─────────────────────────────────────────────────────────────
+
+// Wraps a body in a full HTML document with Nect's default look: a dark
+// card layout with system fonts. `title` is plain text.
+fn ui_page(title, body) {
+    return "<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>${title}</title>
+<style>
+  :root { --bg: #12141c; --card: #1c1f2b; --text: #e6e8f0; --accent: #7aa2f7; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  .nect-card {
+    background: var(--card); padding: 28px 32px; border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.45); max-width: 720px; width: 100%;
+  }
+  .nect-card h1 { margin: 0 0 6px; font-size: 22px; }
+  .nect-card p.sub { margin: 0 0 18px; color: #9aa3b5; font-size: 13px; }
+  button, input, select {
+    font: inherit; color: var(--text); background: #262b3d;
+    border: 1px solid #363d55; border-radius: 8px; padding: 8px 14px;
+  }
+  button:hover { border-color: var(--accent); cursor: pointer; }
+  button.primary { background: var(--accent); color: #10121a; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class='nect-card'>
+${body}
+</div>
+</body>
+</html>
+"
+}
+
+// ─────────────────────────────────────────────────────────────
+// Widgets
+// ─────────────────────────────────────────────────────────────
+
+// Page heading with the standard subtitle line under it.
+fn ui_heading(text, subtitle) {
+    return "<h1>${text}</h1>
+<p class='sub'>${subtitle} · made with Nect</p>
+"
+}
+
+// A labelled button. `action` is JavaScript run on click, quoted with single
+// strings inside the double-quoted attribute: setColor('#fff') works as-is.
+fn ui_button(label, action) {
+    return "<button onclick=\"${action}\">${label}</button>
+"
+}
+
+// A text input with a placeholder and an element id, so script can read it.
+fn ui_input(id, placeholder) {
+    return "<input id='${id}' placeholder='${placeholder}' autocomplete='off'>
+"
+}
+
+// A horizontal row that lays its children out with even spacing.
+fn ui_row(children) {
+    return "<div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap'>${children}</div>
+"
+}
+
+// A free-form region for anything this library has no widget for:
+// canvases, lists, tables — whatever the app needs.
+fn ui_region(id, inner) {
+    return "<div id='${id}'>${inner}</div>
+"
+}
+
+// ─────────────────────────────────────────────────────────────
+// Opening the app
+// ─────────────────────────────────────────────────────────────
+
+// Writes the page to a temp file and opens it in the system browser.
+// Returns the file path. This is the only side-effecting call here.
+fn ui_open(title, body) {
+    let path = "/tmp/nect-ui-" + str(int(now() * 1000)) + ".html"
+    write_file(path, ui_page(title, body))
+    open_url(path)
+    return path
+}

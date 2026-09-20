@@ -1,0 +1,22 @@
+// MSE sum (sum of squared errors), avoiding division so it is JIT-compiled.
+// AI-relevant: MSE is the most common loss function for regression tasks,
+// used in training autoencoders, value prediction, and diffusion models.
+
+fn squared_error_sum(n) {
+    let sum = 0.0
+    let i = 0
+    let predicted = 0.0
+    let actual = 0.0
+    let diff = 0.0
+    while (i < n) {
+        predicted = i * 0.001 + 0.5
+        actual = i * 0.001 - 0.3
+        diff = predicted - actual
+        sum = sum + diff * diff
+        i = i + 1
+    }
+    return sum
+}
+
+let result = squared_error_sum(500000)
+print("mse sum: " + str(result))

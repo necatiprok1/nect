@@ -1,0 +1,27 @@
+// ReLU (Rectified Linear Unit) activation: max(0, x) applied repeatedly.
+// Uses only comparison and arithmetic — JIT-compiled.
+// AI-relevant: ReLU is the most widely used activation function in deep
+// neural networks. This simulates applying ReLU to each neuron's pre-activation.
+
+fn relu_layer(n_neurons) {
+    let total = 0.0
+    let i = 0
+    let z = 0.0
+    while (i < n_neurons) {
+        z = i * 0.01 - 2.5
+        if (z > 0.0) {
+            total = total + z
+        }
+        i = i + 1
+    }
+    return total
+}
+
+let epochs = 10000
+let total = 0.0
+let epoch = 0
+while (epoch < epochs) {
+    total = total + relu_layer(500)
+    epoch = epoch + 1
+}
+print("relu total: " + str(total))

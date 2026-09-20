@@ -1,0 +1,57 @@
+// Nect variables and values.
+//
+// Run it with:  nect run examples/variables.nct
+
+// `let` declares a name; the value's type is whatever was assigned.
+let name = "Nect"
+let version = 1
+let ratio = 0.5
+let flag = true
+let nothing = null
+
+print("Name: " + name)
+print("Version: " + str(version))
+print("Flag: " + str(flag))
+print("Nothing: " + str(nothing))
+
+// `type()` names the value's type.
+print(type(name), type(version), type(ratio), type(flag), type(nothing))
+
+// Reassignment writes a new value into an existing name.
+version = version + 1
+print("Version: " + str(version))
+
+// Compound assignment is shorthand for reading and writing at once.
+let counter = 10
+counter += 5
+counter -= 3
+counter *= 2
+counter /= 4
+counter %= 4
+print("Counter: " + str(counter))
+
+// `+=` also concatenates strings.
+let banner = "Nect"
+banner += " "
+banner += str(version)
+print(banner)
+
+// A bare block introduces a scope; the outer `name` is untouched inside it.
+{
+    let name = "shadowed"
+    print("Inner: " + name)
+}
+print("Outer: " + name)
+
+// Only `false`, `null`, and `0` are falsy. Empty strings and arrays are truthy.
+if (0) {
+    print("unreachable")
+} else if ("") {
+    print("an empty string is truthy")
+}
+
+// Numbers are 64-bit floats, so they print without a trailing `.0` when whole.
+print(7)
+print(7.5)
+print(1 / 3)
+print(10 / 5)

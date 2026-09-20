@@ -1,0 +1,29 @@
+// Squared Euclidean distance between two k-dimensional vectors.
+// Uses only *, -, + — no division or sqrt, so it is JIT-compiled.
+// AI-relevant: squared distance is used in k-NN classification, k-means
+// clustering, and attention mechanisms (distance-based similarity).
+
+fn squared_distance(k) {
+    let sum = 0.0
+    let i = 0
+    let a = 0.0
+    let b = 0.0
+    let diff = 0.0
+    while (i < k) {
+        a = i * 0.001 + 0.1
+        b = i * 0.002 - 0.05
+        diff = a - b
+        sum = sum + diff * diff
+        i = i + 1
+    }
+    return sum
+}
+
+let k = 500
+let total = 0.0
+let run = 0
+while (run < 1000) {
+    total = total + squared_distance(k)
+    run = run + 1
+}
+print("euclidean distance total: " + str(total))
