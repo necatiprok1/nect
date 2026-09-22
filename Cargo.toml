@@ -9,3 +9,21 @@ cranelift-frontend = "0.135.2"
 cranelift-jit = "0.135.2"
 cranelift-module = "0.135.2"
 cranelift-native = "0.135.2"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+axum = { version = "0.7", features = ["macros"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+semver = "1.0"
+dirs = "5.0"
+flate2 = "1.0"
+tar = "0.4"
+sha2 = "0.10"
+tower-lsp = "0.20"
+lsp-types = "0.94"
+tokio = { version = "1", features = ["full"] }
+egui = "0.30"
+eframe = { version = "0.30", features = ["default"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

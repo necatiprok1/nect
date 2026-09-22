@@ -1,0 +1,203 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Nect",
+  "scopeName": "source.nect",
+  "fileTypes": [
+    "nct"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#interpolation"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#identifiers"
+    },
+    {
+      "include": "#builtins"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.nect",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.hash.nect",
+          "match": "#.*$"
+        },
+        {
+          "name": "comment.block.nect",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            {
+              "include": "#comments"
+            }
+          ]
+        }
+      ]
+    },
+    "interpolation": {
+      "name": "meta.interpolation.nect",
+      "begin": "\\$\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "#expressions"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.nect",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#interpolation"
+            },
+            {
+              "name": "constant.character.escape.nect",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.nect",
+          "match": "\\b(if|else|while|for|in|break|continue|return)\\b"
+        },
+        {
+          "name": "keyword.declaration.nect",
+          "match": "\\b(let|fn|import)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.nect",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "constant.language.nect",
+          "match": "\\b(true|false|null)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.nect",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.nect",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.assignment.nect",
+          "match": "=|\\+=|-=|\\*=|/=|%="
+        },
+        {
+          "name": "keyword.operator.logical.symbol.nect",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.ternary.nect",
+          "match": "\\?|:"
+        },
+        {
+          "name": "keyword.operator.access.nect",
+          "match": "\\.|\\?\\."
+        },
+        {
+          "name": "punctuation.separator.nect",
+          "match": "[,;:]"
+        },
+        {
+          "name": "punctuation.bracket.nect",
+          "match": "[\\[\\](){}]"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.nect",
+          "match": "\\b\\d+_?\\d*\\.\\d+_?\\d*([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.nect",
+          "match": "\\b\\d+_?\\d*\\b"
+        },
+        {
+          "name": "constant.numeric.exponent.nect",
+          "match": "\\b\\d+[eE][+-]?\\d+\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.parameter.nect",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b(?=\\s*:)"
+        },
+        {
+          "name": "variable.other.nect",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.nect",
+          "match": "\\b(print|println|str|num|bool|type|assert|concat|len|push|pop|join|slice|contains|index_of|split|upper|lower|trim|replace|repeat|sort|reverse|sum|range|keys|values|has|remove|abs|sqrt|floor|ceil|round|min|max|pow|sin|cos|tan|log|int|fixed|char|char_code|input|random|random_int|seed|read_file|write_file|open_url|json_encode|json_decode|now|sleep|args)\\b"
+        }
+      ]
+    },
+    "expressions": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "include": "#identifiers"
+        },
+        {
+          "include": "#builtins"
+        }
+      ]
+    }
+  }
+}

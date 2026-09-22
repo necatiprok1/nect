@@ -1,0 +1,27 @@
+// examples/gui_demo.nct — Native GUI framework demo
+//
+// Run with: cargo run -- run examples/gui_demo.nct
+
+let win = gui_window("Nect GUI Demo")
+
+// Add widgets
+gui_label(win, "title", "Welcome to Nect GUI Framework")
+gui_button(win, "btn_hello", "Say Hello")
+gui_button(win, "btn_click", "Click Me", "on_click")
+gui_text_input(win, "input_name", "Enter your name")
+gui_checkbox(win, "check_dark", "Dark Mode", false)
+gui_slider(win, "slider_volume", "Volume", 0, 100, 50)
+
+// Create layouts
+gui_vstack(win, "main_stack", [])
+gui_hstack(win, "button_row", [])
+
+// Show the window (this blocks until closed)
+gui_show(win)
+
+// Poll for events after window closes
+let events = gui_poll_events(win)
+print("Window closed. Events captured: " + len(events))
+
+gui_close(win)
+print("GUI demo finished")

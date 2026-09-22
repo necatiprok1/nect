@@ -1,0 +1,84 @@
+{
+  "name": "nect-language",
+  "displayName": "Nect Language Support",
+  "description": "Language support for Nect programming language including syntax highlighting and LSP integration",
+  "version": "0.1.0",
+  "publisher": "nect-lang",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "nect",
+    "language",
+    "lsp"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "nect",
+        "aliases": [
+          "Nect",
+          "nect"
+        ],
+        "extensions": [
+          ".nct"
+        ],
+        "configuration": "./language-configuration/language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nect",
+        "scopeName": "source.nect",
+        "path": "./syntaxes/nect.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Nect Language",
+      "properties": {
+        "nect.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Nect Language Server"
+        },
+        "nect.lsp.path": {
+          "type": "string",
+          "default": "nect",
+          "description": "Path to the nect executable (used to start LSP server)"
+        },
+        "nect.lsp.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace level for LSP server communication"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "vscode-languageclient": "^9.0.0"
+  },
+  "activationEvents": [
+    "onLanguage:nect"
+  ],
+  "main": "./out/extension.js"
+}

@@ -130,6 +130,33 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::Function { name, params, body })
             }
+            TokenKind::Async => {
+                self.advance();
+                self.consume_newlines();
+                // Expect "fn" after "async"
+                self.expect(TokenKind::Func, "expected 'fn' after 'async'")?;
+                self.consume_newlines();
+                let line = self.peek().line;
+                let col = self.peek().col;
+                let name = self.expect_identifier_at(line, col, "expected function name")?;
+                self.expect(TokenKind::LeftParen, "expected '(' after function name")?;
+                let mut params = Vec::new();
+                if !self.check_kind(&TokenKind::RightParen) {
+                    loop {
+                        let param_line = self.peek().line;
+                        let param_col = self.peek().col;
+                        params.push(self.expect_identifier_at(param_line, param_col, "expected parameter name")?);
+                        if !self.matches(&[TokenKind::Comma])
+                            || self.check_kind(&TokenKind::RightParen)
+                        {
+                            break;
+                        }
+                    }
+                }
+                self.expect(TokenKind::RightParen, "expected ')' after parameters")?;
+                let body = self.parse_block()?;
+                Ok(Stmt::AsyncFunction { name, params, body })
+            }
             TokenKind::If => {
                 self.advance();
                 let cond = self.parse_parenthesised_or_bare_condition("if")?;
@@ -261,7 +288,7 @@ impl Parser {
         Ok(stmts)
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+    pub fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_assignment()
     }
 
@@ -770,6 +797,18 @@ impl Parser {
                 self.expect(TokenKind::RightParen, "expected ')' after expression")?;
                 Ok(Expr::Grouping(Box::new(expr)))
             }
+            TokenKind::Await => {
+                self.advance();
+                let expr = self.parse_primary()?;
+                Ok(Expr::Await(Box::new(expr)))
+            }
+            TokenKind::Spawn => {
+                self.advance();
+                self.expect(TokenKind::LeftParen, "expected '(' after 'spawn'")?;
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::RightParen, "expected ')' after spawn argument")?;
+                Ok(Expr::Spawn(Box::new(expr)))
+            }
             _ => Err(ParseError {
                 message: format!("expected an expression, found '{}'", token_name(&token.kind)),
                 line,
@@ -907,6 +946,9 @@ fn token_name(kind: &TokenKind) -> String {
         TokenKind::Str(_) => "string".to_string(),
         TokenKind::Let => "keyword let".to_string(),
         TokenKind::Func => "keyword fn".to_string(),
+        TokenKind::Async => "keyword async".to_string(),
+        TokenKind::Await => "keyword await".to_string(),
+        TokenKind::Spawn => "keyword spawn".to_string(),
         TokenKind::If => "keyword if".to_string(),
         TokenKind::Else => "keyword else".to_string(),
         TokenKind::While => "keyword while".to_string(),

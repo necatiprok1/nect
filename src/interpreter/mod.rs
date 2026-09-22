@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 // The value-level core lives in `builtins`, shared with the bytecode VM.
 pub use crate::builtins::{format_value, is_truthy, type_name, RuntimeError};
-use crate::builtins::{apply_binary, apply_unary, get_index, set_index, Map};
+use crate::builtins::{apply_binary, apply_unary, get_index, set_index, Map, Future, ThreadHandle};
 
 type Scope = HashMap<String, Value>;
 type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, RuntimeError>>;
@@ -106,6 +106,24 @@ impl Interpreter {
         }
         Self { env }
     }
+    
+    /// Get all variables in the current scope (for debugger)
+    pub fn get_locals(&self) -> Vec<(String, Value)> {
+        if let Some(scope) = self.env.scopes.last() {
+            scope.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        } else {
+            vec![]
+        }
+    }
+    
+    /// Evaluate an expression string in the current context (for debugger print)
+    pub fn eval_expr(&mut self, expr_str: &str) -> Result<Value, String> {
+        let lexer = crate::lexer::Lexer::new(expr_str);
+        let tokens = lexer.tokenize().map_err(|e| e.message)?;
+        let mut parser = crate::parser::Parser::new(tokens);
+        let expr = parser.parse_expr().map_err(|e| e.message)?;
+        self.eval(&expr).map_err(|e| e.message)
+    }
 
     pub fn run(&mut self, stmts: &[Stmt]) -> Result<(), RuntimeError> {
         for stmt in stmts {
@@ -195,6 +213,15 @@ impl Interpreter {
                 Ok(())
             }
             Stmt::Function { name, params, body } => {
+                let func = Function {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                };
+                self.env.define(name.clone(), Value::Function(func));
+                Ok(())
+            }
+            Stmt::AsyncFunction { name, params, body } => {
                 let func = Function {
                     name: name.clone(),
                     params: params.clone(),
@@ -333,6 +360,38 @@ impl Interpreter {
                 let idx = self.eval(index)?;
                 let val = self.eval(value)?;
                 set_index(&arr, &idx, *op, val)
+            }
+            Expr::Await(expr) => {
+                // In the interpreter, await just evaluates the expression
+                // since we don't have real async support yet
+                let val = self.eval(expr)?;
+                match val {
+                    Value::Future(f) => {
+                        // Block until ready
+                        while !f.borrow().is_ready() {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Ok(f.borrow().get_result().unwrap_or(Value::Null))
+                    }
+                    other => Ok(other),
+                }
+            }
+            Expr::Spawn(expr) => {
+                // Spawn a function in a new thread
+                let val = self.eval(expr)?;
+                match val {
+                    Value::Function(_f) => {
+                        // For now, create a dummy thread that just sleeps briefly
+                        let handle = std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        });
+                        Ok(Value::ThreadHandle(Rc::new(RefCell::new(ThreadHandle::new(handle)))))
+                    }
+                    other => Err(RuntimeError::new(&format!(
+                        "spawn() requires a function, got {}",
+                        type_name(&other)
+                    ))),
+                }
             }
         }
     }

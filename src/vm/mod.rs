@@ -1046,6 +1046,11 @@ impl Compiler {
             Stmt::Function { name, params, body } => {
                 self.compile_function(name, params, body)?;
             }
+            Stmt::AsyncFunction { name, params, body } => {
+                // For now, compile async functions the same as regular functions
+                // Real async support would require a Future type and async runtime
+                self.compile_function(name, params, body)?;
+            }
             Stmt::Return(expr) => {
                 match expr {
                     Some(e) => self.compile_expr(e)?,
@@ -1261,6 +1266,17 @@ impl Compiler {
                     return Err(RuntimeError::new(&format!("undefined function '{}'", name)));
                 };
                 self.emit(Op::Call(target, args.len() as u32));
+            }
+            Expr::Await(expr) => {
+                self.compile_expr(expr)?;
+                // In the VM, await is a no-op for now - just evaluate the expression
+                // Real async support would require a Future type and async runtime
+            }
+            Expr::Spawn(expr) => {
+                // Compile spawn as a call to the builtin spawn function
+                self.compile_expr(expr)?;
+                let symbol = self.interner.intern("spawn");
+                self.emit(Op::Call(CallTarget::Native(symbol), 1));
             }
         }
         Ok(())

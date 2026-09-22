@@ -1,1 +1,9 @@
 /target
+editors/vscode/nect-language/node_modules/
+docs/site/*.html
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

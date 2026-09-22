@@ -8,6 +8,9 @@ pub enum TokenKind {
 
     Let,
     Func,
+    Async,
+    Await,
+    Spawn,
     If,
     Else,
     While,
@@ -485,6 +488,9 @@ impl<'a> Lexer<'a> {
         match s {
             "let" => Ok(TokenKind::Let),
             "fn" => Ok(TokenKind::Func),
+            "async" => Ok(TokenKind::Async),
+            "await" => Ok(TokenKind::Await),
+            "spawn" => Ok(TokenKind::Spawn),
             "if" => Ok(TokenKind::If),
             "else" => Ok(TokenKind::Else),
             "while" => Ok(TokenKind::While),

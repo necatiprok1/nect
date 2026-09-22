@@ -54,6 +54,10 @@ pub enum Expr {
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
     },
+    /// Await an async computation: `await expr`.
+    Await(Box<Expr>),
+    /// Spawn a function in a new thread: `spawn(fn)`.
+    Spawn(Box<Expr>),
     Grouping(Box<Expr>),
 }
 
@@ -80,7 +84,7 @@ pub enum UnaryOp {
     Not,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Number(f64),
     String(String),
@@ -92,6 +96,39 @@ pub enum Value {
     /// booleans (the hashable subset); `null`, arrays, maps, and functions are
     /// rejected as keys. `d["key"]` reads, `d["key"] = v` inserts or overwrites.
     Map(Rc<RefCell<crate::builtins::Map>>),
+    /// A future/promise from an async computation.
+    Future(Rc<RefCell<crate::builtins::Future>>),
+    /// A channel for thread communication.
+    Channel(Rc<RefCell<crate::builtins::Channel>>),
+    /// A mutex for synchronization.
+    Mutex(Rc<RefCell<crate::builtins::Mutex>>),
+    /// A thread handle returned by spawn.
+    ThreadHandle(Rc<RefCell<crate::builtins::ThreadHandle>>),
+    /// A SQLite database connection.
+    DbConnection(Rc<RefCell<crate::builtins::DbConnection>>),
+    /// A GUI window handle for native GUI framework.
+    GuiWindow(Rc<RefCell<crate::builtins::GuiWindow>>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Null, Value::Null) => true,
+            (Value::Function(a), Value::Function(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => *a.borrow() == *b.borrow(),
+            (Value::Map(a), Value::Map(b)) => *a.borrow() == *b.borrow(),
+            (Value::Future(a), Value::Future(b)) => Rc::ptr_eq(a, b),
+            (Value::Channel(a), Value::Channel(b)) => Rc::ptr_eq(a, b),
+            (Value::Mutex(a), Value::Mutex(b)) => Rc::ptr_eq(a, b),
+            (Value::ThreadHandle(a), Value::ThreadHandle(b)) => Rc::ptr_eq(a, b),
+            (Value::DbConnection(a), Value::DbConnection(b)) => Rc::ptr_eq(a, b),
+            (Value::GuiWindow(a), Value::GuiWindow(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,4 +170,10 @@ pub enum Stmt {
     Break,
     /// Skips to the next iteration of the innermost enclosing loop.
     Continue,
+    /// Async function definition.
+    AsyncFunction {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+    },
 }
