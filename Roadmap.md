@@ -48,5 +48,6 @@ PHASE 7
   - ~~✓ Package system: nect add, nect remove, nect install, dependency resolution~~
 ~~✓ Documentation website~~
   - Site in docs/site/ (index.html, tutorial.html, cookbook.html, reference.html, style.css, build.py)
-☐ GitHub releases
-☐ Automated CI/CD
+~~✓ GitHub releases~~
+~~✓ Automated CI/CD~~
+  - GitHub Actions: build, test, clippy, fmt check on Linux + macOS

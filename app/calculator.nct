@@ -1,0 +1,257 @@
+// app/calculator.nct — macOS tarzı hesap makinesi uygulaması.
+//
+// Çalıştır:  ./target/release/nect run app/calculator.nct
+
+import "std/ui.nct"
+
+// ──────────────────────────────────────────────────
+// Hesaplama motoru (Nect tarafında)
+// ──────────────────────────────────────────────────
+
+fn evaluate(expr) {
+    let cleaned = ""
+    for ch in expr {
+        if ch >= "0" and ch <= "9" {
+            cleaned += ch
+        } else if ch == "." {
+            cleaned += ch
+        }
+    }
+    if cleaned == "" {
+        return "0"
+    }
+
+    let num = ""
+    let ops = []
+    let nums = []
+    let i = 0
+    let n = len(cleaned)
+
+    while i < n {
+        let ch = cleaned[i]
+        if ch >= "0" and ch <= "9" {
+            num += ch
+        } else if ch == "." {
+            num += ch
+        } else if ch == "+" or ch == "-" or ch == "*" or ch == "/" {
+            if num != "" {
+                nums += [num]
+                num = ""
+            }
+            ops += [ch]
+        } else {
+            return "Hata"
+        }
+        i += 1
+    }
+
+    if num != "" {
+        nums += [num]
+    }
+
+    if len(nums) == 0 {
+        return "0"
+    }
+
+    if len(nums) == 1 {
+        return nums[0]
+    }
+
+    let result = num(nums[0])
+    let j = 0
+    for op in ops {
+        let next = num(nums[j + 1])
+        if op == "+" {
+            result = result + next
+        } else if op == "-" {
+            result = result - next
+        } else if op == "*" {
+            result = result * next
+        } else if op == "/" {
+            if next == 0.0 {
+                return "Sıfıra bölünemez"
+            }
+            result = result / next
+        }
+        j += 1
+    }
+
+    let s = str(result)
+    if s == "nan" or s == "inf" or s == "-inf" {
+        return "Hata"
+    }
+    return s
+}
+
+// ──────────────────────────────────────────────────
+// UI yardımcıları
+// ──────────────────────────────────────────────────
+
+fn calc_button(label, action) {
+    return "<button class='btn' onclick=\"" + action + "\">" + label + "</button>
+"
+}
+
+fn calc_row(buttons) {
+    return buttons
+}
+
+fn calc_keypad(rows) {
+    return "<div class='keypad'>" + rows + "</div>
+"
+}
+
+// ──────────────────────────────────────────────────
+// Ana uygulama
+// ──────────────────────────────────────────────────
+
+let display = "<input id='display' class='display' value='0' readonly>
+"
+
+let row1 = calc_row(
+    calc_button("C", "clearDisplay()")
+    + calc_button("⌫", "backspace()")
+    + calc_button("%", "appendValue('%')")
+    + calc_button("÷", "appendOp('/')")
+)
+
+let row2 = calc_row(
+    calc_button("7", "appendValue('7')")
+    + calc_button("8", "appendValue('8')")
+    + calc_button("9", "appendValue('9')")
+    + calc_button("×", "appendOp('*')")
+)
+
+let row3 = calc_row(
+    calc_button("4", "appendValue('4')")
+    + calc_button("5", "appendValue('5')")
+    + calc_button("6", "appendValue('6')")
+    + calc_button("-", "appendOp('-')")
+)
+
+let row4 = calc_row(
+    calc_button("1", "appendValue('1')")
+    + calc_button("2", "appendValue('2')")
+    + calc_button("3", "appendValue('3')")
+    + calc_button("+", "appendOp('+')")
+)
+
+let row5 = calc_row(
+    calc_button("±", "negate()")
+    + calc_button("0", "appendValue('0')")
+    + calc_button(".", "appendValue('.')")
+    + calc_button("=", "calculate()")
+)
+
+let body = (
+    ui_heading("Hesap Makinesi", "macOS tarzı hesap makinesi")
+    + "<style>
+input.display {
+    width: 100%; font-size: 48px; text-align: right;
+    background: transparent; border: none; color: var(--text);
+    padding: 12px 4px; margin-bottom: 16px;
+}
+.keypad {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+}
+.keypad .btn {
+    width: 100%; aspect-ratio: 1.4; font-size: 22px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 12px; border: none; padding: 0;
+}
+.keypad .btn:hover { background: #3b82f6; color: #fff; }
+.keypad .btn:active { transform: scale(0.95); }
+.keypad .btn:last-child { background: var(--accent); color: #10121a; font-weight: 600; }
+</style>
+"
+    + display
+    + calc_keypad(row1 + row2 + row3 + row4 + row5)
+    + "<script>
+let current = '0'
+let expression = ''
+
+function updateDisplay() {
+    document.getElementById('display').value = current
+}
+
+function clearDisplay() {
+    current = '0'
+    expression = ''
+    updateDisplay()
+}
+
+function backspace() {
+    if (current.length > 1) {
+        current = current.slice(0, -1)
+    } else {
+        current = '0'
+    }
+    updateDisplay()
+}
+
+function appendValue(val) {
+    if (current === '0' && val !== '.') {
+        current = val
+    } else {
+        if (val === '.' && current.includes('.')) return
+        current += val
+    }
+    updateDisplay()
+}
+
+function appendOp(op) {
+    if (current !== '' && current !== '0') {
+        expression += current + op
+        current = '0'
+        updateDisplay()
+    }
+}
+
+function negate() {
+    if (current !== '0') {
+        if (current.startsWith('-')) {
+            current = current.slice(1)
+        } else {
+            current = '-' + current
+        }
+        updateDisplay()
+    }
+}
+
+function calculate() {
+    let fullExpr = expression + current
+    if (fullExpr === '' || fullExpr === '0') return
+    let result = ''
+    try {
+        let ws = new Function('return (' + fullExpr + ')')
+        let r = ws()
+        if (typeof r === 'number' && isFinite(r)) {
+            result = String(parseFloat(r.toFixed(10)))
+        } else {
+            result = 'Hata'
+        }
+    } catch(e) {
+        result = 'Hata'
+    }
+    current = result
+    expression = ''
+    updateDisplay()
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key >= '0' && e.key <= '9') appendValue(e.key)
+    else if (e.key === '.') appendValue('.')
+    else if (e.key === '+') appendOp('+')
+    else if (e.key === '-') appendOp('-')
+    else if (e.key === '*') appendOp('*')
+    else if (e.key === '/') { e.preventDefault(); appendOp('/') }
+    else if (e.key === 'Enter' || e.key === '=') calculate()
+    else if (e.key === 'Escape' || e.key === 'Delete') clearDisplay()
+    else if (e.key === 'Backspace') backspace()
+});
+</script>
+"
+)
+
+let path = ui_open("Hesap Makinesi", body)
+print("Hesap makinesi tarayıcıda açıldı: " + path)
