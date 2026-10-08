@@ -21,13 +21,31 @@ pub struct Lint {
 
 impl Lint {
     pub fn error(message: String, line: usize, column: usize, rule: &'static str) -> Self {
-        Self { severity: Severity::Error, message, line, column, rule }
+        Self {
+            severity: Severity::Error,
+            message,
+            line,
+            column,
+            rule,
+        }
     }
     pub fn warning(message: String, line: usize, column: usize, rule: &'static str) -> Self {
-        Self { severity: Severity::Warning, message, line, column, rule }
+        Self {
+            severity: Severity::Warning,
+            message,
+            line,
+            column,
+            rule,
+        }
     }
     pub fn info(message: String, line: usize, column: usize, rule: &'static str) -> Self {
-        Self { severity: Severity::Info, message, line, column, rule }
+        Self {
+            severity: Severity::Info,
+            message,
+            line,
+            column,
+            rule,
+        }
     }
 }
 
@@ -86,7 +104,9 @@ impl Linter {
             params_in_current_fn: Vec::new(),
             dead_code_reachable: true,
         };
-        linter.scopes.push(Scope { vars: HashMap::new() });
+        linter.scopes.push(Scope {
+            vars: HashMap::new(),
+        });
         linter
     }
 
@@ -95,7 +115,9 @@ impl Linter {
         self.used_vars.clear();
         self.defined_vars.clear();
         self.scopes.clear();
-        self.scopes.push(Scope { vars: HashMap::new() });
+        self.scopes.push(Scope {
+            vars: HashMap::new(),
+        });
         self.loop_depth = 0;
         self.function_depth = 0;
         self.in_function_body = false;
@@ -130,6 +152,7 @@ impl Linter {
         match stmt {
             Let { name, value, .. } => {
                 self.check_shadowing(name, "variable");
+                self.check_builtin_shadow(name, "variable");
                 self.define_var(name.clone(), self.current_pos(value));
                 self.lint_expr(value);
             }
@@ -141,7 +164,9 @@ impl Linter {
                     if !self.dead_code_reachable && self.config.dead_code {
                         self.lints.push(Lint::warning(
                             "unreachable code".to_string(),
-                            0, 0, "dead_code",
+                            0,
+                            0,
+                            "dead_code",
                         ));
                         // Only warn once per block
                         self.dead_code_reachable = true;
@@ -151,7 +176,11 @@ impl Linter {
                 self.pop_scope();
                 self.dead_code_reachable = old_reachable;
             }
-            If { condition, then_branch, else_branch } => {
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 self.lint_expr(condition);
                 self.push_scope();
                 let old_reachable = self.dead_code_reachable;
@@ -159,7 +188,9 @@ impl Linter {
                     if !self.dead_code_reachable && self.config.dead_code {
                         self.lints.push(Lint::warning(
                             "unreachable code".to_string(),
-                            0, 0, "dead_code",
+                            0,
+                            0,
+                            "dead_code",
                         ));
                         self.dead_code_reachable = true;
                     }
@@ -174,7 +205,9 @@ impl Linter {
                         if !self.dead_code_reachable && self.config.dead_code {
                             self.lints.push(Lint::warning(
                                 "unreachable code".to_string(),
-                                0, 0, "dead_code",
+                                0,
+                                0,
+                                "dead_code",
                             ));
                             self.dead_code_reachable = true;
                         }
@@ -193,7 +226,9 @@ impl Linter {
                     if !self.dead_code_reachable && self.config.dead_code {
                         self.lints.push(Lint::warning(
                             "unreachable code".to_string(),
-                            0, 0, "dead_code",
+                            0,
+                            0,
+                            "dead_code",
                         ));
                         self.dead_code_reachable = true;
                     }
@@ -205,13 +240,14 @@ impl Linter {
             }
             Function { name, params, body } => {
                 self.check_shadowing(name, "function");
+                self.check_builtin_shadow(name, "function");
                 self.define_var(name.clone(), (0, 0)); // function name at top level
                 self.function_depth += 1;
-                
+
                 // Track parameters for unused parameter check
                 let old_params = std::mem::take(&mut self.params_in_current_fn);
                 self.params_in_current_fn = params.clone();
-                
+
                 self.push_scope();
                 let old_reachable = self.dead_code_reachable;
                 self.dead_code_reachable = true;
@@ -223,7 +259,9 @@ impl Linter {
                     if !self.dead_code_reachable && self.config.dead_code {
                         self.lints.push(Lint::warning(
                             "unreachable code".to_string(),
-                            0, 0, "dead_code",
+                            0,
+                            0,
+                            "dead_code",
                         ));
                         self.dead_code_reachable = true;
                     }
@@ -233,29 +271,32 @@ impl Linter {
                 self.pop_scope();
                 self.dead_code_reachable = old_reachable;
                 self.function_depth -= 1;
-                
+
                 // Check for unused parameters (use current function's params, not old_params)
                 if self.config.unused_parameters {
                     for param in &self.params_in_current_fn {
                         if !self.used_vars.contains(param) && !param.starts_with('_') {
                             self.lints.push(Lint::warning(
                                 format!("unused parameter: `{}`", param),
-                                0, 0, "unused_parameters",
+                                0,
+                                0,
+                                "unused_parameters",
                             ));
                         }
                     }
                 }
-                
+
                 self.params_in_current_fn = old_params;
             }
             AsyncFunction { name, params, body } => {
                 self.check_shadowing(name, "async function");
+                self.check_builtin_shadow(name, "async function");
                 self.define_var(name.clone(), (0, 0));
                 self.function_depth += 1;
-                
+
                 let old_params = std::mem::take(&mut self.params_in_current_fn);
                 self.params_in_current_fn = params.clone();
-                
+
                 self.push_scope();
                 let old_reachable = self.dead_code_reachable;
                 self.dead_code_reachable = true;
@@ -267,7 +308,9 @@ impl Linter {
                     if !self.dead_code_reachable && self.config.dead_code {
                         self.lints.push(Lint::warning(
                             "unreachable code".to_string(),
-                            0, 0, "dead_code",
+                            0,
+                            0,
+                            "dead_code",
                         ));
                         self.dead_code_reachable = true;
                     }
@@ -277,25 +320,29 @@ impl Linter {
                 self.pop_scope();
                 self.dead_code_reachable = old_reachable;
                 self.function_depth -= 1;
-                
+
                 if self.config.unused_parameters {
                     for param in &self.params_in_current_fn {
                         if !self.used_vars.contains(param) && !param.starts_with('_') {
                             self.lints.push(Lint::warning(
                                 format!("unused parameter: `{}`", param),
-                                0, 0, "unused_parameters",
+                                0,
+                                0,
+                                "unused_parameters",
                             ));
                         }
                     }
                 }
-                
+
                 self.params_in_current_fn = old_params;
             }
             Return(expr) => {
                 if self.function_depth == 0 {
                     self.lints.push(Lint::error(
                         "`return` outside of function".to_string(),
-                        0, 0, "invalid_return",
+                        0,
+                        0,
+                        "invalid_return",
                     ));
                 }
                 if let Some(e) = expr {
@@ -305,7 +352,11 @@ impl Linter {
                     self.dead_code_reachable = false;
                 }
             }
-            For { var_name, iterable, body } => {
+            For {
+                var_name,
+                iterable,
+                body,
+            } => {
                 self.lint_expr(iterable);
                 self.loop_depth += 1;
                 self.push_scope();
@@ -315,7 +366,9 @@ impl Linter {
                     if !self.dead_code_reachable && self.config.dead_code {
                         self.lints.push(Lint::warning(
                             "unreachable code".to_string(),
-                            0, 0, "dead_code",
+                            0,
+                            0,
+                            "dead_code",
                         ));
                         self.dead_code_reachable = true;
                     }
@@ -329,7 +382,9 @@ impl Linter {
                 if self.loop_depth == 0 {
                     self.lints.push(Lint::error(
                         "`break` outside of loop".to_string(),
-                        0, 0, "invalid_break",
+                        0,
+                        0,
+                        "invalid_break",
                     ));
                 }
                 if self.config.dead_code {
@@ -340,12 +395,17 @@ impl Linter {
                 if self.loop_depth == 0 {
                     self.lints.push(Lint::error(
                         "`continue` outside of loop".to_string(),
-                        0, 0, "invalid_continue",
+                        0,
+                        0,
+                        "invalid_continue",
                     ));
                 }
                 if self.config.dead_code {
                     self.dead_code_reachable = false;
                 }
+            }
+            Extern { .. } => {
+                // Extern declarations are checked at runtime via FFI call marshaling
             }
         }
     }
@@ -384,12 +444,21 @@ impl Linter {
                 self.lint_expr(array);
                 self.lint_expr(index);
             }
-            SetIndex { array, index, value, .. } => {
+            SetIndex {
+                array,
+                index,
+                value,
+                ..
+            } => {
                 self.lint_expr(array);
                 self.lint_expr(index);
                 self.lint_expr(value);
             }
-            Conditional { condition, then_expr, else_expr } => {
+            Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.lint_expr(condition);
                 self.lint_expr(then_expr);
                 self.lint_expr(else_expr);
@@ -412,7 +481,9 @@ impl Linter {
     }
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope { vars: HashMap::new() });
+        self.scopes.push(Scope {
+            vars: HashMap::new(),
+        });
     }
 
     fn pop_scope(&mut self) {
@@ -433,11 +504,37 @@ impl Linter {
             if scope.vars.contains_key(name) {
                 self.lints.push(Lint::warning(
                     format!("`{}` shadows {} from outer scope", name, kind),
-                    0, 0, "shadowing",
+                    0,
+                    0,
+                    "shadowing",
                 ));
                 break;
             }
         }
+    }
+
+    /// Warns when a declaration reuses a built-in name.
+    ///
+    /// The declaration is accepted, but a call to that name always resolves to
+    /// the built-in on both engines, so the declaration is inert. That is the
+    /// safe behaviour — a built-in's meaning cannot be changed by a local
+    /// declaration — but it makes for confusing code, because the function looks
+    /// like it is being called and is not. Flagging it is the difference between
+    /// a confusing program and an obviously inert one.
+    fn check_builtin_shadow(&mut self, name: &str, kind: &str) {
+        if !crate::builtins::names().contains(&name) {
+            return;
+        }
+        let subject = match kind {
+            "function" | "async function" => "this function is never called",
+            _ => "this binding is never used",
+        };
+        self.lints.push(Lint::warning(
+            format!("`{name}` is a built-in, so {subject}; a call to `{name}` uses the built-in"),
+            0,
+            0,
+            "shadowed_builtin",
+        ));
     }
 
     fn current_pos(&self, _expr: &Expr) -> (usize, usize) {
@@ -450,7 +547,7 @@ pub fn lint_source(source: &str, config: LinterConfig) -> Result<Vec<Lint>, Stri
     let tokens = lexer.tokenize().map_err(|e| e.message)?;
     let parser = Parser::new(tokens);
     let stmts = parser.parse().map_err(|e| e.message)?;
-    
+
     let mut linter = Linter::new(config);
     Ok(linter.lint(&stmts))
 }
@@ -468,15 +565,27 @@ mod tests {
     fn test_unused_variable() {
         let source = "let x = 42\nlet y = 10";
         let lints = lint_source(source, LinterConfig::all()).unwrap();
-        assert!(lints.iter().any(|l| l.rule == "unused_variables" && l.message.contains("x")));
-        assert!(lints.iter().any(|l| l.rule == "unused_variables" && l.message.contains("y")));
+        assert!(
+            lints
+                .iter()
+                .any(|l| l.rule == "unused_variables" && l.message.contains("x"))
+        );
+        assert!(
+            lints
+                .iter()
+                .any(|l| l.rule == "unused_variables" && l.message.contains("y"))
+        );
     }
 
     #[test]
     fn test_used_variable() {
         let source = "let x = 42\nprint(x)";
         let lints = lint_source(source, LinterConfig::all()).unwrap();
-        assert!(!lints.iter().any(|l| l.rule == "unused_variables" && l.message.contains("x")));
+        assert!(
+            !lints
+                .iter()
+                .any(|l| l.rule == "unused_variables" && l.message.contains("x"))
+        );
     }
 
     #[test]
@@ -511,6 +620,10 @@ mod tests {
     fn test_underscore_prefix_ignored() {
         let source = "let _unused = 42";
         let lints = lint_source(source, LinterConfig::all()).unwrap();
-        assert!(!lints.iter().any(|l| l.rule == "unused_variables" && l.message.contains("_unused")));
+        assert!(
+            !lints
+                .iter()
+                .any(|l| l.rule == "unused_variables" && l.message.contains("_unused"))
+        );
     }
 }

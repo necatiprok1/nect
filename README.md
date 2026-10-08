@@ -40,18 +40,103 @@ fn sieve(limit) {
 print(sieve(30))
 ```
 
+## Install
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://github.com/necatiprok1/nect/releases/latest/download/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://github.com/necatiprok1/nect/releases/latest/download/install.ps1 | iex
+```
+
+**No Rust, Cargo, Visual Studio, or C/C++ compiler is needed to install Nect or
+run `.nct` programs.** The scripts download a prebuilt executable, verify it
+against `SHA256SUMS`, and set up your user `PATH` without administrator access.
+Open a new terminal afterward.
+
+The default **lean** build includes the VM, JIT, and embedded standard library.
+Measured locally on macOS ARM64: **3.00 MiB installed / 1.34 MiB download**;
+other platforms and versions may differ. Add `--full` for the language server,
+package manager, and FFI. In PowerShell, download the script and run
+`.\install.ps1 -Full`.
+
+Prefer a single file? Download `nect.exe` for Windows, or extract `nect` from
+your platform's archive on the [Releases page](https://github.com/necatiprok1/nect/releases/latest).
+No separate runtime is bundled or required beyond supported system libraries.
+`nect build` is the exception: its C backend still needs a system C compiler.
+
+These commands become available once a release with binary assets has been
+published. A source-only release is not enough; maintainers can first run the
+**Release** workflow with `dry-run` enabled.
+
+**[docs/KURULUM.md](docs/KURULUM.md)** is the full guide in Turkish:
+[Windows / macOS / Linux installation](docs/KURULUM.md), manual installation,
+building from source, the optional features and what each one costs, and how to
+verify or uninstall.
+
+From source (for Nect contributors or custom feature builds, not required for users):
+
+```sh
+git clone https://github.com/necatiprok1/nect.git
+cd nect
+cargo install --path .                # lean
+cargo install --path . --features full
+```
+
 ## Quick start
 
-```bash
-cargo build --release
+After installation, save a file called `hello.nct` containing `print("Hello, Nect!")`, then:
 
-./target/release/nect run examples/hello.nct
-./target/release/nect run examples/primes.nct
-./target/release/nect check  examples/arrays.nct   # parse only
-./target/release/nect disasm examples/arrays.nct   # bytecode + JIT decisions
-./target/release/nect run --interp examples/primes.nct  # reference engine
-./target/release/nect run -                             # read stdin
+```sh
+nect --version
+nect run hello.nct
+nect check hello.nct       # parse only
+nect disasm hello.nct      # bytecode + JIT decisions
+nect run --interp hello.nct
+nect run -                # read source from stdin
 ```
+
+The `examples/` directory is in this repository, not required by the installed executable.
+
+## Optional features
+
+The default build is the language. Everything that pulls in a large third-party
+dependency tree is a cargo feature, so nobody downloads a GUI toolkit in order to
+run a hello-world:
+
+| Feature | Adds | Cost |
+| --- | --- | --- |
+| `net` | `http_get`, `http_post`, `http_request` | ~106 crates |
+| `server` | `http_server`, `http_route`, `http_listen`, … | ~49 crates |
+| `db` | `db_open`, `db_query`, … (SQLite) | ~9 crates + a C compile |
+| `gui` | `gui_window`, `gui_show`, … | ~150 crates |
+| `lsp` | the `nect lsp` language server | ~52 crates |
+| `pkg` | the `nect pkg` package manager | ~60 crates |
+| `ffi` | `extern` declarations | a few crates |
+| `full` | `lsp` + `pkg` + `ffi` | the "I want everything" build |
+
+```sh
+cargo install --path . --features full
+cargo install --path . --features gui,db
+```
+
+`gui`, `net`, `server`, and `db` are deliberately *not* in `full`: together they
+are the bulk of the tree, and most people never touch them. Ask for them by
+name.
+
+A lean binary is not a broken binary — it just says so:
+
+```console
+$ nect run gui_demo.nct
+error: 'gui_window' needs the `gui` feature (rebuild with --features gui)
+```
+
+`nect doctor` lists what a given binary has.
 
 ## Compiling to a native binary
 

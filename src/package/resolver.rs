@@ -29,7 +29,10 @@ struct DependencyResolver<'a> {
 }
 
 impl<'a> DependencyResolver<'a> {
-    fn new(index: &'a HashMap<String, Vec<PackageIndexEntry>>, lockfile: Option<&'a Lockfile>) -> Self {
+    fn new(
+        index: &'a HashMap<String, Vec<PackageIndexEntry>>,
+        lockfile: Option<&'a Lockfile>,
+    ) -> Self {
         Self {
             index,
             lockfile,
@@ -41,7 +44,7 @@ impl<'a> DependencyResolver<'a> {
 
     fn resolve(&mut self, manifest: &Manifest) -> Result<Vec<ResolvedPackage>, String> {
         let mut all_deps = HashMap::new();
-        
+
         for (name, dep) in &manifest.dependencies {
             all_deps.insert(name.clone(), dep.clone());
         }
@@ -74,9 +77,13 @@ impl<'a> DependencyResolver<'a> {
 
         let (version, dependencies, checksum) = {
             let entry = self.select_version(name, &version_req, locked_version.as_deref())?;
-            (entry.version.clone(), entry.dependencies.keys().cloned().collect::<Vec<_>>(), entry.checksum.clone())
+            (
+                entry.version.clone(),
+                entry.dependencies.keys().cloned().collect::<Vec<_>>(),
+                entry.checksum.clone(),
+            )
         };
-        
+
         let resolved = ResolvedPackage {
             name: name.to_string(),
             version: version.clone(),
@@ -107,7 +114,10 @@ impl<'a> DependencyResolver<'a> {
 
     fn get_locked_version(&self, name: &str) -> Option<String> {
         self.lockfile.and_then(|lf| {
-            lf.package.iter().find(|p| p.name == name).map(|p| p.version.clone())
+            lf.package
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.version.clone())
         })
     }
 
@@ -117,28 +127,38 @@ impl<'a> DependencyResolver<'a> {
         req: &VersionReq,
         locked: Option<&str>,
     ) -> Result<&PackageIndexEntry, String> {
-        let versions = self.index.get(name)
+        let versions = self
+            .index
+            .get(name)
             .ok_or_else(|| format!("package '{}' not found in registry", name))?;
 
         let mut candidates: Vec<&PackageIndexEntry> = versions
             .iter()
             .filter(|v| {
-                !v.yanked && Version::parse(&v.version).map(|ver| req.matches(&ver)).unwrap_or(false)
+                !v.yanked
+                    && Version::parse(&v.version)
+                        .map(|ver| req.matches(&ver))
+                        .unwrap_or(false)
             })
             .collect();
 
         if candidates.is_empty() {
-            return Err(format!("no matching version found for '{}' matching '{}'", name, req));
+            return Err(format!(
+                "no matching version found for '{}' matching '{}'",
+                name, req
+            ));
         }
 
         candidates.sort_by(|a, b| {
-            Version::parse(&b.version).unwrap().cmp(&Version::parse(&a.version).unwrap())
+            Version::parse(&b.version)
+                .unwrap()
+                .cmp(&Version::parse(&a.version).unwrap())
         });
 
-        if let Some(locked_ver) = locked {
-            if let Some(v) = candidates.iter().find(|v| v.version == locked_ver) {
-                return Ok(*v);
-            }
+        if let Some(locked_ver) = locked
+            && let Some(v) = candidates.iter().find(|v| v.version == locked_ver)
+        {
+            return Ok(*v);
         }
 
         Ok(candidates[0])
@@ -147,11 +167,11 @@ impl<'a> DependencyResolver<'a> {
 
 pub fn compute_content_hash(manifest: &Manifest, lockfile: Option<&Lockfile>) -> String {
     use sha2::{Digest, Sha256};
-    
+
     let mut hasher = Sha256::new();
     hasher.update(manifest.package.name.as_bytes());
     hasher.update(manifest.package.version.as_bytes());
-    
+
     for (name, dep) in &manifest.dependencies {
         hasher.update(name.as_bytes());
         match dep {
@@ -159,7 +179,7 @@ pub fn compute_content_hash(manifest: &Manifest, lockfile: Option<&Lockfile>) ->
             Dependency::Detailed(d) => hasher.update(d.version.as_bytes()),
         }
     }
-    
+
     for (name, dep) in &manifest.dev_dependencies {
         hasher.update(name.as_bytes());
         match dep {

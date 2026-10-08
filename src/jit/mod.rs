@@ -18,7 +18,7 @@ use crate::vm::{
     CallTarget, CompiledFunction, Fusee, ModuleEntry, Op, Program, TAG_CONST, TAG_LOCAL,
 };
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlagsData, Value as ClValue};
+use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlagsData, Value as ClValue, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -301,7 +301,10 @@ fn contains_loop(instructions: &[Op], limit: usize) -> bool {
         .iter()
         .enumerate()
         .take(limit)
-        .any(|(position, op)| op.jump_target().is_some_and(|target| target as usize <= position))
+        .any(|(position, op)| {
+            op.jump_target()
+                .is_some_and(|target| target as usize <= position)
+        })
 }
 
 /// Call targets reached from inside a loop body, i.e. calls that run once per
@@ -424,7 +427,12 @@ fn hands_back(function: &CompiledFunction, cut: usize) -> Result<bool, &'static 
     Ok(match last {
         Some(index) => !matches!(
             instructions[index],
-            Op::Jump(_) | Op::JumpIfFalse(_) | Op::JumpIfTrue(_) | Op::JumpIfNot { .. } | Op::Return | Op::Halt
+            Op::Jump(_)
+                | Op::JumpIfFalse(_)
+                | Op::JumpIfTrue(_)
+                | Op::JumpIfNot { .. }
+                | Op::Return
+                | Op::Halt
         ),
         None => false,
     })
@@ -560,7 +568,9 @@ fn infer(
                     return Err("jump with a non-empty operand stack");
                 }
             }
-            Op::Call(CallTarget::Native(_), _) => return Err("calls a builtin"),
+            // Both a builtin and a declared extern are native calls; neither
+            // can be inlined, so the function stays on the bytecode VM.
+            Op::Call(CallTarget::Native(_), _) => return Err("calls a builtin or extern"),
             Op::Call(CallTarget::Function(index), arg_count) => {
                 for _ in 0..*arg_count {
                     require_num(stack.pop(), "calls with a non-number argument")?;
@@ -588,7 +598,11 @@ fn infer(
             // written, which native code cannot report as an error.
             Op::LoadLocalChecked { .. } => return Err("reads a conditional declaration"),
             // Arrays and maps are heap values, which native code does not speak.
-            Op::MakeArray(_) | Op::ArrayLen | Op::LoadIndex | Op::StoreIndex | Op::StoreIndexOp(_) => {
+            Op::MakeArray(_)
+            | Op::ArrayLen
+            | Op::LoadIndex
+            | Op::StoreIndex
+            | Op::StoreIndexOp(_) => {
                 return Err("uses arrays");
             }
             Op::MakeMap(_) => {
@@ -607,7 +621,10 @@ fn infer(
         if reachable[index] {
             continue;
         }
-        if matches!(instructions[index], Op::LoadLocalChecked { .. } | Op::JumpIfTrue(_)) {
+        if matches!(
+            instructions[index],
+            Op::LoadLocalChecked { .. } | Op::JumpIfTrue(_)
+        ) {
             return Err("unreachable code needs the bytecode VM");
         }
     }
@@ -787,7 +804,9 @@ impl Jit {
         // bytecode VM, not abort the process.
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(program, analysis.clone())));
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            build(program, analysis.clone())
+        }));
         std::panic::set_hook(hook);
         match built {
             Ok(Some(jit)) => Some(jit),
@@ -836,16 +855,18 @@ pub unsafe fn call_compiled(function: JitFunction, depth: *mut isize, args: &[f6
     let result = unsafe {
         match function.arity {
             0 => std::mem::transmute::<_, extern "C" fn(*mut isize) -> f64>(code)(depth),
-            1 => std::mem::transmute::<_, extern "C" fn(*mut isize, f64) -> f64>(code)(depth, args[0]),
+            1 => std::mem::transmute::<_, extern "C" fn(*mut isize, f64) -> f64>(code)(
+                depth, args[0],
+            ),
             2 => std::mem::transmute::<_, extern "C" fn(*mut isize, f64, f64) -> f64>(code)(
                 depth, args[0], args[1],
             ),
             3 => std::mem::transmute::<_, extern "C" fn(*mut isize, f64, f64, f64) -> f64>(code)(
                 depth, args[0], args[1], args[2],
             ),
-            4 => std::mem::transmute::<_, extern "C" fn(*mut isize, f64, f64, f64, f64) -> f64>(code)(
-                depth, args[0], args[1], args[2], args[3],
-            ),
+            4 => std::mem::transmute::<_, extern "C" fn(*mut isize, f64, f64, f64, f64) -> f64>(
+                code,
+            )(depth, args[0], args[1], args[2], args[3]),
             _ => return None,
         }
     };
@@ -1060,21 +1081,16 @@ fn compile_body(
 
         // Depth guard: increment, and bail out when the native chain is too
         // deep for the host stack.
-        let counter = builder
-            .ins()
-            .load(pointer_type, flags, depth, 0);
+        let counter = builder.ins().load(pointer_type, flags, depth, 0);
         let incremented = builder.ins().iadd_imm_u(counter, 1);
         builder.ins().store(flags, incremented, depth, 0);
         let bail = builder.create_block();
         let body = builder.create_block();
-        let too_deep = builder.ins().icmp_imm_s(
-            IntCC::SignedGreaterThan,
-            incremented,
-            MAX_NATIVE_DEPTH,
-        );
-        builder
-            .ins()
-            .brif(too_deep, bail, &[], body, &[]);
+        let too_deep =
+            builder
+                .ins()
+                .icmp_imm_s(IntCC::SignedGreaterThan, incremented, MAX_NATIVE_DEPTH);
+        builder.ins().brif(too_deep, bail, &[], body, &[]);
         builder.switch_to_block(body);
 
         // One block per reachable jump target, so control flow can branch. The
@@ -1165,30 +1181,65 @@ fn compile_body(
                 Op::BinaryOp(op) => {
                     let right = stack.pop().ok_or("operand stack underflow")?;
                     let left = stack.pop().ok_or("operand stack underflow")?;
-                    guarded_division(&mut builder, &mut current, &mut filled, &mut terminated, *op, right, bail);
+                    guarded_division(
+                        &mut builder,
+                        &mut current,
+                        &mut filled,
+                        &mut terminated,
+                        *op,
+                        right,
+                        bail,
+                    );
                     let result = binary(&mut builder, *op, left, right)?;
                     stack.push(result);
                 }
                 Op::BinaryFast { op, lhs, rhs } => {
                     let left = read_operand(&mut builder, function, &locals, *lhs)?;
                     let right = read_operand(&mut builder, function, &locals, *rhs)?;
-                    guarded_division(&mut builder, &mut current, &mut filled, &mut terminated, *op, right, bail);
+                    guarded_division(
+                        &mut builder,
+                        &mut current,
+                        &mut filled,
+                        &mut terminated,
+                        *op,
+                        right,
+                        bail,
+                    );
                     let result = binary(&mut builder, *op, left, right)?;
                     stack.push(result);
                 }
                 Op::BinaryStore { op, dst, lhs, rhs } => {
                     let left = read_operand(&mut builder, function, &locals, *lhs)?;
                     let right = read_operand(&mut builder, function, &locals, *rhs)?;
-                    guarded_division(&mut builder, &mut current, &mut filled, &mut terminated, *op, right, bail);
+                    guarded_division(
+                        &mut builder,
+                        &mut current,
+                        &mut filled,
+                        &mut terminated,
+                        *op,
+                        right,
+                        bail,
+                    );
                     let result = binary(&mut builder, *op, left, right)?;
                     builder.def_var(locals[dst.index() as usize], result);
                 }
                 Op::JumpIfNot {
-                    op, lhs, rhs, target,
+                    op,
+                    lhs,
+                    rhs,
+                    target,
                 } => {
                     let left = read_operand(&mut builder, function, &locals, *lhs)?;
                     let right = read_operand(&mut builder, function, &locals, *rhs)?;
-                    guarded_division(&mut builder, &mut current, &mut filled, &mut terminated, *op, right, bail);
+                    guarded_division(
+                        &mut builder,
+                        &mut current,
+                        &mut filled,
+                        &mut terminated,
+                        *op,
+                        right,
+                        bail,
+                    );
                     // A comparison feeds the branch directly: no need to
                     // materialise a boolean and test it again.
                     let truthy = match comparison_flag(&mut builder, *op, left, right) {
@@ -1316,9 +1367,12 @@ fn compile_body(
             builder.switch_to_block(exit);
             for (slot, local) in locals.iter().enumerate() {
                 let value = builder.use_var(*local);
-                builder
-                    .ins()
-                    .store(flags, value, out_ptr, (slot * std::mem::size_of::<f64>()) as i32);
+                builder.ins().store(
+                    flags,
+                    value,
+                    out_ptr,
+                    (slot * std::mem::size_of::<f64>()) as i32,
+                );
             }
             let counter = builder.ins().load(pointer_type, flags, depth, 0);
             let decremented = builder.ins().iadd_imm_s(counter, -1);

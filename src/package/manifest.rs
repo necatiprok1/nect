@@ -87,7 +87,8 @@ impl Manifest {
     }
 
     pub fn add_dev_dependency(&mut self, name: String, version: String) {
-        self.dev_dependencies.insert(name, Dependency::Simple(version));
+        self.dev_dependencies
+            .insert(name, Dependency::Simple(version));
     }
 
     pub fn remove_dependency(&mut self, name: &str) {

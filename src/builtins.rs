@@ -6,8 +6,9 @@
 //! names in [`NAMES`] are the complete set of builtins; anything else is a user
 //! function (or an error).
 
-use crate::ast::{BinaryOp, UnaryOp, Value};
-use reqwest::blocking;
+pub use crate::ast::Value;
+
+use crate::ast::{BinaryOp, UnaryOp};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
@@ -50,7 +51,10 @@ impl Map {
 
     pub fn get(&self, key: &Value) -> Option<Value> {
         let key = Self::key_of(key)?;
-        self.entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
+        self.entries
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
     }
 
     pub fn contains(&self, key: &Value) -> bool {
@@ -95,12 +99,16 @@ impl Map {
     }
 }
 
-use std::sync::{Arc, Mutex as StdMutex, Condvar, mpsc};
-use rusqlite::{Connection, Statement, params, Error as SqliteError};
+use std::sync::{Arc, Condvar, Mutex as StdMutex, mpsc};
 
 /// A future/promise from an async computation.
 #[derive(Debug, Clone)]
 pub struct Future {
+    // `Arc`, not `Rc`: a spawned thread writes the result and the awaiting thread
+    // reads it, so this genuinely crosses a thread boundary. Clippy suggests
+    // `Rc` because `FutureState` holds a `Value`, which is not `Send`; the
+    // sharing is intentional and the alternative does not compile.
+    #[allow(clippy::arc_with_non_send_sync)]
     pub state: Arc<StdMutex<FutureState>>,
     pub condvar: Arc<Condvar>,
 }
@@ -114,6 +122,8 @@ pub enum FutureState {
 impl Future {
     pub fn new() -> Self {
         Self {
+            // See the note on the field: this is shared with another thread.
+            #[allow(clippy::arc_with_non_send_sync)]
             state: Arc::new(StdMutex::new(FutureState::Pending)),
             condvar: Arc::new(Condvar::new()),
         }
@@ -162,21 +172,37 @@ impl Channel {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
+            // Shared with the receiving thread; see the note on `Future::state`.
+            #[allow(clippy::arc_with_non_send_sync)]
             tx: Arc::new(StdMutex::new(tx)),
+            // The receiving end, for the same reason: a spawned thread drains it.
+            #[allow(clippy::arc_with_non_send_sync)]
             rx: Arc::new(StdMutex::new(rx)),
         }
     }
 
     pub fn send(&self, value: Value) -> Result<(), RuntimeError> {
-        self.tx.lock().unwrap().send(value).map_err(|_| RuntimeError::new("channel closed"))
+        self.tx
+            .lock()
+            .unwrap()
+            .send(value)
+            .map_err(|_| RuntimeError::new("channel closed"))
     }
 
     pub fn recv(&self) -> Result<Value, RuntimeError> {
-        self.rx.lock().unwrap().recv().map_err(|_| RuntimeError::new("channel closed"))
+        self.rx
+            .lock()
+            .unwrap()
+            .recv()
+            .map_err(|_| RuntimeError::new("channel closed"))
     }
 
     pub fn try_recv(&self) -> Result<Value, RuntimeError> {
-        self.rx.lock().unwrap().try_recv().map_err(|_| RuntimeError::new("channel empty or closed"))
+        self.rx
+            .lock()
+            .unwrap()
+            .try_recv()
+            .map_err(|_| RuntimeError::new("channel empty or closed"))
     }
 }
 
@@ -205,13 +231,13 @@ impl Mutex {
         }
     }
 
-    pub fn lock(&self) -> MutexGuard {
+    pub fn lock(&self) -> MutexGuard<'_> {
         MutexGuard {
             guard: self.inner.lock().unwrap(),
         }
     }
 
-    pub fn try_lock(&self) -> Option<MutexGuard> {
+    pub fn try_lock(&self) -> Option<MutexGuard<'_>> {
         self.inner.try_lock().ok().map(|guard| MutexGuard { guard })
     }
 }
@@ -229,6 +255,9 @@ impl PartialEq for Mutex {
 }
 
 pub struct MutexGuard<'a> {
+    // Never read: the value exists for the unlock its `Drop` performs, which is
+    // what makes `with_mutex` release the lock at the end of the closure.
+    #[allow(dead_code)]
     guard: std::sync::MutexGuard<'a, ()>,
 }
 
@@ -246,7 +275,9 @@ pub struct ThreadHandle {
 
 impl ThreadHandle {
     pub fn new(handle: std::thread::JoinHandle<()>) -> Self {
-        Self { handle: Some(handle) }
+        Self {
+            handle: Some(handle),
+        }
     }
 
     pub fn join(&mut self) -> Result<(), RuntimeError> {
@@ -366,7 +397,10 @@ pub fn apply_unary(op: UnaryOp, v: Value) -> Result<Value, RuntimeError> {
     match op {
         UnaryOp::Negate => match v {
             Value::Number(n) => Ok(Value::Number(-n)),
-            _ => Err(RuntimeError::new(&format!("cannot negate a {}", type_name(&v)))),
+            _ => Err(RuntimeError::new(&format!(
+                "cannot negate a {}",
+                type_name(&v)
+            ))),
         },
         UnaryOp::Not => Ok(Value::Boolean(!is_truthy(&v))),
     }
@@ -455,9 +489,18 @@ pub fn get_index(target: &Value, index: &Value) -> Result<Value, RuntimeError> {
             Ok(elements[position].clone())
         }
         Value::String(text) => {
-            let chars: Vec<char> = text.chars().collect();
-            let position = element_index("string", index, chars.len())?;
-            Ok(Value::String(chars[position].to_string()))
+            let count = text.chars().count();
+            let position = element_index("string", index, count)?;
+            text.chars()
+                .nth(position)
+                .map(|c| Value::String(c.to_string()))
+                .ok_or_else(|| {
+                    RuntimeError::new(&format!(
+                        "string index {} out of bounds (length {})",
+                        format_value(index),
+                        count
+                    ))
+                })
         }
         Value::Map(map) => {
             if let Some(value) = map.borrow().get(index) {
@@ -564,17 +607,30 @@ pub fn format_value(v: &Value) -> String {
         Value::Boolean(b) => b.to_string(),
         Value::Null => "null".to_string(),
         Value::Array(elements) => {
-            let items: Vec<String> = elements.borrow().iter().map(format_in_array).collect();
-            format!("[{}]", items.join(", "))
+            let elements = elements.borrow();
+            let mut output = String::from("[");
+            for (i, elem) in elements.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&format_in_array(elem));
+            }
+            output.push(']');
+            output
         }
         Value::Map(map) => {
-            let items: Vec<String> = map
-                .borrow()
-                .entries
-                .iter()
-                .map(|(k, v)| format!("{}: {}", format_in_array(k), format_in_array(v)))
-                .collect();
-            format!("{{{}}}", items.join(", "))
+            let map = map.borrow();
+            let mut output = String::from("{");
+            for (i, (k, v)) in map.entries.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&format_in_array(k));
+                output.push_str(": ");
+                output.push_str(&format_in_array(v));
+            }
+            output.push('}');
+            output
         }
         Value::Function(f) => format!("<function {}>", f.name),
         Value::Future(_) => "<future>".to_string(),
@@ -601,7 +657,11 @@ fn format_number(n: f64) -> String {
     if n.is_nan() {
         "nan".to_string()
     } else if n.is_infinite() {
-        if n > 0.0 { "inf".to_string() } else { "-inf".to_string() }
+        if n > 0.0 {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        }
     } else if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{}", n as i64)
     } else {
@@ -609,9 +669,40 @@ fn format_number(n: f64) -> String {
     }
 }
 
-/// Every built-in name, in registration order. The VM interns these so calls to
-/// them resolve to [`CallTarget::Native`](crate::vm::CallTarget::Native).
-pub const NAMES: &[&str] = &[
+/// Every built-in the current build supports, in registration order.
+///
+/// The VM interns these so calls to them resolve to
+/// [`CallTarget::Native`](crate::vm::CallTarget::Native), and the interpreter
+/// registers the same set, so this is the single list that decides what the
+/// language can call.
+///
+/// It is assembled at first use rather than being a `const` because the optional
+/// groups are behind cargo features: a build without `gui` has no `gui_window` to
+/// register, and a name in the table that no call arm handles would resolve to a
+/// slot that is always `None`.
+pub fn names() -> &'static [&'static str] {
+    static NAMES: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        let mut all: Vec<&'static str> = Vec::with_capacity(160);
+        all.extend_from_slice(CORE_NAMES);
+        #[cfg(feature = "net")]
+        all.extend_from_slice(NET_NAMES);
+        #[cfg(feature = "server")]
+        all.extend_from_slice(SERVER_NAMES);
+        #[cfg(feature = "db")]
+        all.extend_from_slice(DB_NAMES);
+        #[cfg(feature = "gui")]
+        all.extend_from_slice(GUI_NAMES);
+        all
+    });
+    &NAMES
+}
+
+/// The built-ins that need no optional dependency: the language itself, plus
+/// the parts of the standard library that are pure Rust.
+///
+/// This is what a plain `cargo build` gives you, and it is enough to run,
+/// compile, embed, and benchmark a program.
+pub const CORE_NAMES: &[&str] = &[
     // output
     "print",
     "println",
@@ -689,18 +780,14 @@ pub const NAMES: &[&str] = &[
     "unlock",
     "async",
     "await",
-    // HTTP client
-    "http_get",
-    "http_post",
-    "http_request",
-    // HTTP server
-    "http_server",
-    "http_respond",
-    "http_listen",
-    // Routing
-    "http_route",
-    "http_middleware",
-    "http_router",
+    // Web helpers. These are pure functions of their arguments, so they cost
+    // nothing to carry and are useful without a network stack.
+    "http_match_route",
+    "http_parse_cookies",
+    "http_cookie",
+    "http_error",
+    "http_validate",
+    "http_status_text",
     // AI/ML - Tensors
     "tensor",
     "tensor_shape",
@@ -729,7 +816,23 @@ pub const NAMES: &[&str] = &[
     "train_test_split",
     "accuracy",
     "argmax",
-    // Database - SQLite
+];
+
+/// HTTP client built-ins. Behind `net`, which is most of `reqwest`.
+pub const NET_NAMES: &[&str] = &["http_get", "http_post", "http_request"];
+
+/// HTTP server built-ins. Behind `server`, which is most of `axum`.
+pub const SERVER_NAMES: &[&str] = &[
+    "http_server",
+    "http_respond",
+    "http_listen",
+    "http_route",
+    "http_middleware",
+    "http_router",
+];
+
+/// SQLite built-ins. Behind `db`, which is `rusqlite` and its bundled C library.
+pub const DB_NAMES: &[&str] = &[
     "db_open",
     "db_close",
     "db_exec",
@@ -738,7 +841,11 @@ pub const NAMES: &[&str] = &[
     "db_transaction",
     "db_last_insert_rowid",
     "db_changes",
-    // GUI framework
+];
+
+/// Native GUI built-ins. Behind `gui`, which is `egui`/`eframe` and by far the
+/// largest optional dependency — about 150 crates on its own.
+pub const GUI_NAMES: &[&str] = &[
     "gui_window",
     "gui_button",
     "gui_label",
@@ -752,6 +859,80 @@ pub const NAMES: &[&str] = &[
     "gui_close",
 ];
 
+/// The error a program gets when it declares an `extern` in a build without the
+/// `ffi` feature. Defined here so the VM and the interpreter report the same
+/// thing rather than each inventing a message.
+pub fn ffi_unavailable() -> RuntimeError {
+    RuntimeError::new("extern declarations require the `ffi` feature (rebuild with --features ffi)")
+}
+
+/// Every name every optional group would add, paired with the feature that adds
+/// it. Written out rather than derived from the gated `*_NAMES` consts, because
+/// the point is to know the names in the builds where the const is empty.
+const ALL_GROUPS: &[(&str, &[&str])] = &[
+    ("net", NET_NAMES),
+    ("server", SERVER_NAMES),
+    ("db", DB_NAMES),
+    ("gui", GUI_NAMES),
+];
+
+/// Every optional feature this crate defines, with whether this binary has it.
+///
+/// One table, so `--version` and the "this built-in needs a feature" message
+/// cannot disagree about what a given build contains.
+pub const FEATURE_STATUS: &[(&str, bool)] = &[
+    ("net", cfg!(feature = "net")),
+    ("server", cfg!(feature = "server")),
+    ("db", cfg!(feature = "db")),
+    ("gui", cfg!(feature = "gui")),
+    ("lsp", cfg!(feature = "lsp")),
+    ("pkg", cfg!(feature = "pkg")),
+    ("ffi", cfg!(feature = "ffi")),
+];
+
+/// Whether `feature` is compiled into this binary.
+pub fn has_feature(feature: &str) -> bool {
+    FEATURE_STATUS
+        .iter()
+        .any(|(name, on)| *name == feature && *on)
+}
+
+/// The feature that would provide `name`, if this build left that group out.
+///
+/// A program that calls `gui_window` on a lean build should be told that the
+/// name is real and which feature supplies it, not that it never existed. A
+/// name whose feature *is* compiled in returns `None`: the call dispatch has an
+/// arm for it, so reaching here means the name is genuinely not a built-in.
+pub fn disabled_builtin(name: &str) -> Option<&'static str> {
+    ALL_GROUPS
+        .iter()
+        .find(|(feature, names)| !has_feature(feature) && names.contains(&name))
+        .map(|(feature, _)| *feature)
+}
+
+/// The optional built-in groups this binary was compiled with.
+///
+/// A group that is absent is not a fault — the lean build is the normal one — so
+/// this is information (`nect --version`, `nect doctor`) rather than a warning.
+pub fn enabled_groups() -> Vec<&'static str> {
+    FEATURE_STATUS
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// The error for calling something this build does not have.
+pub fn undefined_function(name: &str) -> RuntimeError {
+    match disabled_builtin(name) {
+        Some(feature) => RuntimeError::new(&format!(
+            "'{}' needs the `{}` feature (rebuild with --features {})",
+            name, feature, feature
+        )),
+        None => RuntimeError::new(&format!("undefined function '{}'", name)),
+    }
+}
+
 /// Script arguments collected by the CLI (`nect run app.nct a b` → `args()`
 /// is `["a", "b"]`). Set once before execution; both engines read it.
 static SCRIPT_ARGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -764,13 +945,67 @@ pub fn set_script_args(args: Vec<String>) {
 
 /// Dispatches a builtin call.
 ///
+/// Where a program's own output goes.
+///
+/// `print` normally writes to stdout, but a host that owns stdout for its own
+/// protocol — the Debug Adapter Protocol, most importantly — cannot have the
+/// debuggee's output interleaved into the message stream. Redirecting to stderr
+/// keeps the program's output visible in the client's console without corrupting
+/// the transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSink {
+    Stdout,
+    Stderr,
+}
+
+static OUTPUT_SINK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Redirects `print` output. Returns the previous setting so a caller can
+/// restore it.
+pub fn set_output_sink(sink: OutputSink) -> OutputSink {
+    let previous = match OUTPUT_SINK.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => OutputSink::Stderr,
+        _ => OutputSink::Stdout,
+    };
+    OUTPUT_SINK.store(
+        match sink {
+            OutputSink::Stdout => 0,
+            OutputSink::Stderr => 1,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    previous
+}
+
+/// The sink `print` is currently writing to.
+pub fn output_sink() -> OutputSink {
+    match OUTPUT_SINK.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => OutputSink::Stderr,
+        _ => OutputSink::Stdout,
+    }
+}
+
+/// Writes one line of program output to the configured sink.
+fn emit_line(line: &str) {
+    match output_sink() {
+        OutputSink::Stdout => println!("{}", line),
+        OutputSink::Stderr => eprintln!("{}", line),
+    }
+}
+
 /// `args` are already-evaluated arguments. An unknown name is an error rather
 /// than a panic, so the two engines can share this entry point safely.
 pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
     match name {
         "print" | "println" => {
-            let rendered: Vec<String> = args.iter().map(format_value).collect();
-            println!("{}", rendered.join(" "));
+            let mut output = String::new();
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 {
+                    output.push(' ');
+                }
+                output.push_str(&format_value(arg));
+            }
+            emit_line(&output);
             Ok(Value::Null)
         }
         "str" => Ok(Value::String(match args.first() {
@@ -799,7 +1034,9 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         "slice" => slice(args),
         "contains" => {
             require_arity(name, args, 2)?;
-            Ok(Value::Boolean(index_of_value(&args[0], &args[1])?.is_some()))
+            Ok(Value::Boolean(
+                index_of_value(&args[0], &args[1])?.is_some(),
+            ))
         }
         "index_of" => {
             require_arity(name, args, 2)?;
@@ -878,9 +1115,7 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         "sin" => number_map(name, args, f64::sin),
         "cos" => number_map(name, args, f64::cos),
         "tan" => number_map(name, args, f64::tan),
-        "log" => number_map(name, args, |n| {
-            if n <= 0.0 { f64::NAN } else { n.ln() }
-        }),
+        "log" => number_map(name, args, |n| if n <= 0.0 { f64::NAN } else { n.ln() }),
         "min" => extremum(name, args, true),
         "max" => extremum(name, args, false),
         "pow" => {
@@ -903,10 +1138,7 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                     "fixed() requires a digit count between 0 and 100",
                 ));
             }
-            Ok(Value::String(format!(
-                "{value:.*}",
-                digits as usize
-            )))
+            Ok(Value::String(format!("{value:.*}", digits as usize)))
         }
         "char" => {
             require_arity(name, args, 1)?;
@@ -928,9 +1160,7 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
             match &args[0] {
                 Value::String(s) => match s.chars().next() {
                     Some(c) => Ok(Value::Number(c as u32 as f64)),
-                    None => Err(RuntimeError::new(
-                        "char_code() requires a non-empty string",
-                    )),
+                    None => Err(RuntimeError::new("char_code() requires a non-empty string")),
                 },
                 other => Err(RuntimeError::new(&format!(
                     "char_code() requires a string, got {}",
@@ -959,9 +1189,7 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                 )));
             }
             let span = (high - low + 1.0).min(2f64.powi(53));
-            Ok(Value::Number(
-                (next_random_f64() * span).floor() + low,
-            ))
+            Ok(Value::Number((next_random_f64() * span).floor() + low))
         }
         "seed" => {
             require_arity(name, args, 1)?;
@@ -1008,7 +1236,9 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                     let handle = std::thread::spawn(|| {
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     });
-                    Ok(Value::ThreadHandle(Rc::new(RefCell::new(ThreadHandle::new(handle)))))
+                    Ok(Value::ThreadHandle(Rc::new(RefCell::new(
+                        ThreadHandle::new(handle),
+                    ))))
                 }
                 other => Err(RuntimeError::new(&format!(
                     "spawn() requires a function, got {}",
@@ -1121,9 +1351,7 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
             match &args[0] {
                 Value::String(path) => std::fs::read_to_string(path)
                     .map(Value::String)
-                    .map_err(|e| {
-                        RuntimeError::new(&format!("cannot read file '{}': {}", path, e))
-                    }),
+                    .map_err(|e| RuntimeError::new(&format!("cannot read file '{}': {}", path, e))),
                 other => Err(RuntimeError::new(&format!(
                     "read_file() requires a string path, got {}",
                     type_name(other)
@@ -1173,15 +1401,32 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                 ))),
             }
         }
+        // Each group is gated by the cargo feature that carries its dependency,
+        // so a build without `net` has neither the code nor the name.
+        #[cfg(feature = "net")]
         "http_get" => http_get(args),
+        #[cfg(feature = "net")]
         "http_post" => http_post(args),
+        #[cfg(feature = "net")]
         "http_request" => http_request(args),
+        #[cfg(feature = "server")]
         "http_server" => http_server(args),
+        #[cfg(feature = "server")]
         "http_respond" => http_respond(args),
+        #[cfg(feature = "server")]
         "http_listen" => http_listen(args),
+        #[cfg(feature = "server")]
         "http_route" => http_route(args),
+        #[cfg(feature = "server")]
         "http_middleware" => http_middleware(args),
+        #[cfg(feature = "server")]
         "http_router" => http_router(args),
+        "http_match_route" => crate::web::builtin_match_route(args),
+        "http_parse_cookies" => crate::web::builtin_parse_cookies(args),
+        "http_cookie" => crate::web::builtin_cookie(args),
+        "http_error" => crate::web::builtin_error(args),
+        "http_validate" => crate::web::builtin_validate(args),
+        "http_status_text" => crate::web::builtin_status_text(args),
         // AI/ML - Tensors
         "tensor" => tensor(args),
         "tensor_shape" => tensor_shape(args),
@@ -1211,31 +1456,47 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         "accuracy" => accuracy(args),
         "argmax" => argmax(args),
         // Database - SQLite
+        #[cfg(feature = "db")]
         "db_open" => db_open(args),
+        #[cfg(feature = "db")]
         "db_close" => db_close(args),
+        #[cfg(feature = "db")]
         "db_exec" => db_exec(args),
+        #[cfg(feature = "db")]
         "db_query" => db_query(args),
+        #[cfg(feature = "db")]
         "db_query_row" => db_query_row(args),
+        #[cfg(feature = "db")]
         "db_transaction" => db_transaction(args),
+        #[cfg(feature = "db")]
         "db_last_insert_rowid" => db_last_insert_rowid(args),
+        #[cfg(feature = "db")]
         "db_changes" => db_changes(args),
         // GUI framework
+        #[cfg(feature = "gui")]
         "gui_window" => gui_window(args),
+        #[cfg(feature = "gui")]
         "gui_button" => gui_button(args),
+        #[cfg(feature = "gui")]
         "gui_label" => gui_label(args),
+        #[cfg(feature = "gui")]
         "gui_text_input" => gui_text_input(args),
+        #[cfg(feature = "gui")]
         "gui_checkbox" => gui_checkbox(args),
+        #[cfg(feature = "gui")]
         "gui_slider" => gui_slider(args),
+        #[cfg(feature = "gui")]
         "gui_vstack" => gui_vstack(args),
+        #[cfg(feature = "gui")]
         "gui_hstack" => gui_hstack(args),
+        #[cfg(feature = "gui")]
         "gui_show" => gui_show(args),
+        #[cfg(feature = "gui")]
         "gui_poll_events" => gui_poll_events(args),
+        #[cfg(feature = "gui")]
         "gui_close" => gui_close(args),
 
-        other => Err(RuntimeError::new(&format!(
-            "undefined function '{}'",
-            other
-        ))),
+        other => Err(undefined_function(other)),
     }
 }
 
@@ -1270,6 +1531,13 @@ pub fn type_of(value: &Value) -> &'static str {
     }
 }
 
+/// Reads a numeric argument, naming `name` in the error. Public so the built-in
+/// wrappers in [`crate::web`] coerce their arguments exactly as the built-ins in
+/// this module do, rather than repeating the check.
+pub fn require_number(name: &str, value: &Value) -> Result<f64, RuntimeError> {
+    number(name, value)
+}
+
 fn number(name: &str, value: &Value) -> Result<f64, RuntimeError> {
     match value {
         Value::Number(n) => Ok(*n),
@@ -1294,11 +1562,7 @@ fn number_map(name: &str, args: &[Value], f: fn(f64) -> f64) -> Result<Value, Ru
     Ok(Value::Number(result))
 }
 
-fn string_map(
-    name: &str,
-    args: &[Value],
-    f: fn(&str) -> String,
-) -> Result<Value, RuntimeError> {
+fn string_map(name: &str, args: &[Value], f: fn(&str) -> String) -> Result<Value, RuntimeError> {
     require_arity(name, args, 1)?;
     match &args[0] {
         Value::String(s) => Ok(Value::String(f(s))),
@@ -1330,8 +1594,12 @@ fn num(args: &[Value]) -> Result<Value, RuntimeError> {
         Value::Future(_) => Err(RuntimeError::new("cannot convert a future to number")),
         Value::Channel(_) => Err(RuntimeError::new("cannot convert a channel to number")),
         Value::Mutex(_) => Err(RuntimeError::new("cannot convert a mutex to number")),
-        Value::ThreadHandle(_) => Err(RuntimeError::new("cannot convert a thread handle to number")),
-        Value::DbConnection(_) => Err(RuntimeError::new("cannot convert a db connection to number")),
+        Value::ThreadHandle(_) => Err(RuntimeError::new(
+            "cannot convert a thread handle to number",
+        )),
+        Value::DbConnection(_) => Err(RuntimeError::new(
+            "cannot convert a db connection to number",
+        )),
         Value::GuiWindow(_) => Err(RuntimeError::new("cannot convert a gui window to number")),
     }
 }
@@ -1375,9 +1643,21 @@ fn input(args: &[Value]) -> Result<Value, RuntimeError> {
         ));
     }
     if let Some(prompt) = args.first() {
-        print!("{}", format_value(prompt));
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
+        // The prompt goes to the same sink as `print`, so a host that owns
+        // stdout for a protocol does not have it corrupted by a prompt either.
+        let text = format_value(prompt);
+        match output_sink() {
+            OutputSink::Stdout => {
+                print!("{}", text);
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            OutputSink::Stderr => {
+                eprint!("{}", text);
+                use std::io::Write;
+                let _ = std::io::stderr().flush();
+            }
+        }
     }
     let mut line = String::new();
     match std::io::stdin().read_line(&mut line) {
@@ -1388,9 +1668,7 @@ fn input(args: &[Value]) -> Result<Value, RuntimeError> {
             }
             Ok(Value::String(line))
         }
-        Err(error) => Err(RuntimeError::new(&format!(
-            "could not read input: {error}"
-        ))),
+        Err(error) => Err(RuntimeError::new(&format!("could not read input: {error}"))),
     }
 }
 
@@ -1417,12 +1695,19 @@ fn open_in_browser(target: &str) -> Result<(), RuntimeError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    command.spawn().map(|_| ()).map_err(|e| {
-        RuntimeError::new(&format!(
-            "could not open '{}' in a browser: {}",
-            target, e
-        ))
-    })
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| RuntimeError::new(&format!("could not open '{}' in a browser: {}", target, e)))
+}
+
+/// JSON text for any Nect value, for callers outside this module.
+///
+/// Objects are maps in insertion order, so the same value always encodes to the
+/// same text — which is what makes it safe to compare a response body across
+/// engines. `http_error` in [`crate::web`] uses this to build its body.
+pub fn json_encode(value: &Value) -> Result<String, RuntimeError> {
+    json_of_value(value)
 }
 
 /// JSON text for any Nect value. Objects are maps in insertion order, so the
@@ -1464,11 +1749,19 @@ fn json_of_value(value: &Value) -> Result<String, RuntimeError> {
             f.name
         ))),
         Value::Future(_) => Err(RuntimeError::new("json_encode() cannot represent a future")),
-        Value::Channel(_) => Err(RuntimeError::new("json_encode() cannot represent a channel")),
+        Value::Channel(_) => Err(RuntimeError::new(
+            "json_encode() cannot represent a channel",
+        )),
         Value::Mutex(_) => Err(RuntimeError::new("json_encode() cannot represent a mutex")),
-        Value::ThreadHandle(_) => Err(RuntimeError::new("json_encode() cannot represent a thread handle")),
-        Value::DbConnection(_) => Err(RuntimeError::new("json_encode() cannot represent a db connection")),
-        Value::GuiWindow(_) => Err(RuntimeError::new("json_encode() cannot represent a gui window")),
+        Value::ThreadHandle(_) => Err(RuntimeError::new(
+            "json_encode() cannot represent a thread handle",
+        )),
+        Value::DbConnection(_) => Err(RuntimeError::new(
+            "json_encode() cannot represent a db connection",
+        )),
+        Value::GuiWindow(_) => Err(RuntimeError::new(
+            "json_encode() cannot represent a gui window",
+        )),
     }
 }
 
@@ -1506,7 +1799,10 @@ impl JsonReader {
     }
 
     fn error(&self, message: &str) -> RuntimeError {
-        RuntimeError::new(&format!("json_decode(): {} at position {}", message, self.pos))
+        RuntimeError::new(&format!(
+            "json_decode(): {} at position {}",
+            message, self.pos
+        ))
     }
 
     fn skip_spaces(&mut self) {
@@ -1644,7 +1940,10 @@ impl JsonReader {
     fn number(&mut self) -> Result<Value, RuntimeError> {
         let start = self.pos;
         while self.pos < self.chars.len()
-            && matches!(self.chars[self.pos], '0'..='9' | '-' | '+' | '.' | 'e' | 'E')
+            && matches!(
+                self.chars[self.pos],
+                '0'..='9' | '-' | '+' | '.' | 'e' | 'E'
+            )
         {
             self.pos += 1;
         }
@@ -1665,17 +1964,25 @@ fn json_from_str(text: &str) -> Result<Value, RuntimeError> {
     Ok(value)
 }
 
+// HTTP client: most of `reqwest`.
+#[cfg(feature = "net")]
 /// HTTP GET request. Returns a map with status, headers, and body.
 /// Usage: http_get(url) or http_get(url, headers_map)
+#[cfg(feature = "net")]
 fn http_get(args: &[Value]) -> Result<Value, RuntimeError> {
-    if args.len() < 1 || args.len() > 2 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RuntimeError::new(
             "http_get() requires a URL and optional headers map",
         ));
     }
     let url = match &args[0] {
         Value::String(s) => s,
-        other => return Err(RuntimeError::new(&format!("http_get() requires a string URL, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_get() requires a string URL, got {}",
+                type_of(other)
+            )));
+        }
     };
     let mut builder = reqwest::blocking::Client::new().get(url);
     if let Some(Value::Map(headers)) = args.get(1) {
@@ -1685,9 +1992,13 @@ fn http_get(args: &[Value]) -> Result<Value, RuntimeError> {
             }
         }
     }
-    let response = builder.send().map_err(|e| RuntimeError::new(&format!("HTTP request failed: {}", e)))?;
+    let response = builder
+        .send()
+        .map_err(|e| RuntimeError::new(&format!("HTTP request failed: {}", e)))?;
     let status = response.status().as_u16() as f64;
-    let body = response.text().map_err(|e| RuntimeError::new(&format!("Failed to read response: {}", e)))?;
+    let body = response
+        .text()
+        .map_err(|e| RuntimeError::new(&format!("Failed to read response: {}", e)))?;
     let mut result = Map::new();
     result.insert(Value::String("status".into()), Value::Number(status))?;
     result.insert(Value::String("body".into()), Value::String(body))?;
@@ -1696,6 +2007,7 @@ fn http_get(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// HTTP POST request. Returns a map with status, headers, and body.
 /// Usage: http_post(url, body) or http_post(url, body, headers_map)
+#[cfg(feature = "net")]
 fn http_post(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 || args.len() > 3 {
         return Err(RuntimeError::new(
@@ -1704,7 +2016,12 @@ fn http_post(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let url = match &args[0] {
         Value::String(s) => s,
-        other => return Err(RuntimeError::new(&format!("http_post() requires a string URL, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_post() requires a string URL, got {}",
+                type_of(other)
+            )));
+        }
     };
     let body = match &args[1] {
         Value::String(s) => s.clone(),
@@ -1718,9 +2035,13 @@ fn http_post(args: &[Value]) -> Result<Value, RuntimeError> {
             }
         }
     }
-    let response = builder.send().map_err(|e| RuntimeError::new(&format!("HTTP request failed: {}", e)))?;
+    let response = builder
+        .send()
+        .map_err(|e| RuntimeError::new(&format!("HTTP request failed: {}", e)))?;
     let status = response.status().as_u16() as f64;
-    let body = response.text().map_err(|e| RuntimeError::new(&format!("Failed to read response: {}", e)))?;
+    let body = response
+        .text()
+        .map_err(|e| RuntimeError::new(&format!("Failed to read response: {}", e)))?;
     let mut result = Map::new();
     result.insert(Value::String("status".into()), Value::Number(status))?;
     result.insert(Value::String("body".into()), Value::String(body))?;
@@ -1729,6 +2050,7 @@ fn http_post(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Generic HTTP request.
 /// Usage: http_request(method, url) or http_request(method, url, body) or http_request(method, url, body, headers_map)
+#[cfg(feature = "net")]
 fn http_request(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 || args.len() > 4 {
         return Err(RuntimeError::new(
@@ -1737,13 +2059,24 @@ fn http_request(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let method = match &args[0] {
         Value::String(s) => s.to_uppercase(),
-        other => return Err(RuntimeError::new(&format!("http_request() requires a string method, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_request() requires a string method, got {}",
+                type_of(other)
+            )));
+        }
     };
     let url = match &args[1] {
         Value::String(s) => s,
-        other => return Err(RuntimeError::new(&format!("http_request() requires a string URL, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_request() requires a string URL, got {}",
+                type_of(other)
+            )));
+        }
     };
-    let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| RuntimeError::new("Invalid HTTP method"))?;
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| RuntimeError::new("Invalid HTTP method"))?;
     let mut builder = reqwest::blocking::Client::new().request(method, url);
     if args.len() >= 3 {
         let body = match &args[2] {
@@ -1761,50 +2094,72 @@ fn http_request(args: &[Value]) -> Result<Value, RuntimeError> {
             }
         }
     }
-    let response = builder.send().map_err(|e| RuntimeError::new(&format!("HTTP request failed: {}", e)))?;
+    let response = builder
+        .send()
+        .map_err(|e| RuntimeError::new(&format!("HTTP request failed: {}", e)))?;
     let status = response.status().as_u16() as f64;
-    let body = response.text().map_err(|e| RuntimeError::new(&format!("Failed to read response: {}", e)))?;
+    let body = response
+        .text()
+        .map_err(|e| RuntimeError::new(&format!("Failed to read response: {}", e)))?;
     let mut result = Map::new();
     result.insert(Value::String("status".into()), Value::Number(status))?;
     result.insert(Value::String("body".into()), Value::String(body))?;
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
 
+#[cfg(feature = "server")]
 /// Starts an HTTP server on the given port with a named handler function.
 /// Usage: http_listen(port, "handler_function_name")
 /// The handler function must be defined globally and accept a request map, returning a response map.
+#[cfg(feature = "server")]
 fn http_listen(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         return Err(RuntimeError::new(
             "http_listen() requires a port number and a handler function name (string)",
         ));
     }
-    let port = number("http_listen", &args[0])? as u16;
-    let handler_name = match &args[1] {
+    let _port = number("http_listen", &args[0])? as u16;
+    let _handler_name = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("http_listen() requires a string handler name, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_listen() requires a string handler name, got {}",
+                type_of(other)
+            )));
+        }
     };
-    Err(RuntimeError::new("http_listen() requires async runtime support (not yet implemented)"))
+    Err(RuntimeError::new(
+        "http_listen() requires async runtime support (not yet implemented)",
+    ))
 }
 
 /// Starts an HTTP server on the given port (deprecated - use http_listen).
 /// Usage: http_server(port, "handler_function_name")
+#[cfg(feature = "server")]
 fn http_server(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         return Err(RuntimeError::new(
             "http_server() requires a port number and a handler function name (string)",
         ));
     }
-    let port = number("http_server", &args[0])? as u16;
-    let handler_name = match &args[1] {
+    let _port = number("http_server", &args[0])? as u16;
+    let _handler_name = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("http_server() requires a string handler name, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_server() requires a string handler name, got {}",
+                type_of(other)
+            )));
+        }
     };
-    Err(RuntimeError::new("http_server() requires async runtime support (not yet implemented)"))
+    Err(RuntimeError::new(
+        "http_server() requires async runtime support (not yet implemented)",
+    ))
 }
 
 /// Creates an HTTP response map for use with http_server handler.
 /// Usage: http_respond(status, body, headers_map)
+#[cfg(feature = "server")]
 fn http_respond(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 || args.len() > 3 {
         return Err(RuntimeError::new(
@@ -1826,7 +2181,10 @@ fn http_respond(args: &[Value]) -> Result<Value, RuntimeError> {
                 headers_map.insert(Value::String(key.clone()), Value::String(val.clone()))?;
             }
         }
-        result.insert(Value::String("headers".into()), Value::Map(Rc::new(RefCell::new(headers_map))))?;
+        result.insert(
+            Value::String("headers".into()),
+            Value::Map(Rc::new(RefCell::new(headers_map))),
+        )?;
     }
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
@@ -1834,8 +2192,11 @@ fn http_respond(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Creates a route entry for use with http_router.
 /// Usage: http_route(method, path, handler_function_name)
 /// method: "GET", "POST", "PUT", "DELETE", etc.
-/// path: route pattern like "/users/:id" (params not yet implemented)
+/// path: route pattern like "/users/:id"; a trailing `*` captures the rest of
+///       the path. Match a request path with http_match_route, which returns the
+///       captured parameters.
 /// handler_function_name: string name of the handler function
+#[cfg(feature = "server")]
 fn http_route(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 3 {
         return Err(RuntimeError::new(
@@ -1844,15 +2205,30 @@ fn http_route(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let method = match &args[0] {
         Value::String(s) => s.to_uppercase(),
-        other => return Err(RuntimeError::new(&format!("http_route() requires a string method, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_route() requires a string method, got {}",
+                type_of(other)
+            )));
+        }
     };
     let path = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("http_route() requires a string path, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_route() requires a string path, got {}",
+                type_of(other)
+            )));
+        }
     };
     let handler = match &args[2] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("http_route() requires a string handler name, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_route() requires a string handler name, got {}",
+                type_of(other)
+            )));
+        }
     };
     let mut route = Map::new();
     route.insert(Value::String("method".into()), Value::String(method))?;
@@ -1864,6 +2240,7 @@ fn http_route(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Creates a middleware entry for use with http_router.
 /// Usage: http_middleware(handler_function_name)
 /// The middleware function receives (request, next) and should call next() to continue.
+#[cfg(feature = "server")]
 fn http_middleware(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::new(
@@ -1872,7 +2249,13 @@ fn http_middleware(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let handler = match &args[0] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("http_middleware() requires a string handler name, got {}", type_of(other)))),
+
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "http_middleware() requires a string handler name, got {}",
+                type_of(other)
+            )));
+        }
     };
     let mut middleware = Map::new();
     middleware.insert(Value::String("handler".into()), Value::String(handler))?;
@@ -1882,6 +2265,7 @@ fn http_middleware(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Creates a router from routes and middlewares.
 /// Usage: http_router(routes_array, middlewares_array)
 /// Returns a router object for use with http_listen.
+#[cfg(feature = "server")]
 fn http_router(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         return Err(RuntimeError::new(
@@ -1891,8 +2275,14 @@ fn http_router(args: &[Value]) -> Result<Value, RuntimeError> {
     match (&args[0], &args[1]) {
         (Value::Array(routes), Value::Array(middlewares)) => {
             let mut router = Map::new();
-            router.insert(Value::String("routes".into()), Value::Array(Rc::clone(routes)))?;
-            router.insert(Value::String("middlewares".into()), Value::Array(Rc::clone(middlewares)))?;
+            router.insert(
+                Value::String("routes".into()),
+                Value::Array(Rc::clone(routes)),
+            )?;
+            router.insert(
+                Value::String("middlewares".into()),
+                Value::Array(Rc::clone(middlewares)),
+            )?;
             Ok(Value::Map(Rc::new(RefCell::new(router))))
         }
         (other, _) => Err(RuntimeError::new(&format!(
@@ -1910,10 +2300,16 @@ fn tensor(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let (data, shape) = flatten_tensor(&args[0])?;
     let mut result = Map::new();
-    result.insert(Value::String("data".into()), Value::Array(Rc::new(RefCell::new(data))))?;
-    result.insert(Value::String("shape".into()), Value::Array(Rc::new(RefCell::new(
-        shape.into_iter().map(|s| Value::Number(s as f64)).collect()
-    ))))?;
+    result.insert(
+        Value::String("data".into()),
+        Value::Array(Rc::new(RefCell::new(data))),
+    )?;
+    result.insert(
+        Value::String("shape".into()),
+        Value::Array(Rc::new(RefCell::new(
+            shape.into_iter().map(|s| Value::Number(s as f64)).collect(),
+        ))),
+    )?;
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
 
@@ -1937,22 +2333,33 @@ fn tensor_shape(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Gets a value from a tensor at the given indices.
 fn tensor_get(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        return Err(RuntimeError::new("tensor_get() requires a tensor and at least one index"));
+        return Err(RuntimeError::new(
+            "tensor_get() requires a tensor and at least one index",
+        ));
     }
     let tensor = match &args[0] {
         Value::Map(m) => m,
         _ => return Err(RuntimeError::new("First arg must be a tensor")),
     };
-    let data = tensor.borrow().get(&Value::String("data".into()))
+    let data = tensor
+        .borrow()
+        .get(&Value::String("data".into()))
         .ok_or_else(|| RuntimeError::new("Invalid tensor"))?;
-    let shape = tensor.borrow().get(&Value::String("shape".into()))
+    let shape = tensor
+        .borrow()
+        .get(&Value::String("shape".into()))
         .ok_or_else(|| RuntimeError::new("Invalid tensor"))?;
     let shape_arr = match shape {
         Value::Array(s) => s,
         _ => return Err(RuntimeError::new("Invalid tensor shape")),
     };
-    let shape_vec: Vec<usize> = shape_arr.borrow().iter()
-        .map(|v| match v { Value::Number(n) => *n as usize, _ => 0 })
+    let shape_vec: Vec<usize> = shape_arr
+        .borrow()
+        .iter()
+        .map(|v| match v {
+            Value::Number(n) => *n as usize,
+            _ => 0,
+        })
         .collect();
     let data_vec = match data {
         Value::Array(d) => d,
@@ -1967,7 +2374,9 @@ fn tensor_get(args: &[Value]) -> Result<Value, RuntimeError> {
                 Value::Number(n) => *n as usize,
                 _ => return Err(RuntimeError::new("Indices must be numbers")),
             }
-        } else { 0 };
+        } else {
+            0
+        };
         if index >= dim {
             return Err(RuntimeError::new("Index out of bounds"));
         }
@@ -1981,22 +2390,33 @@ fn tensor_get(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Sets a value in a tensor at the given indices.
 fn tensor_set(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 3 {
-        return Err(RuntimeError::new("tensor_set() requires a tensor, indices, and a value"));
+        return Err(RuntimeError::new(
+            "tensor_set() requires a tensor, indices, and a value",
+        ));
     }
     let tensor = match &args[0] {
         Value::Map(m) => m,
         _ => return Err(RuntimeError::new("First arg must be a tensor")),
     };
-    let data = tensor.borrow().get(&Value::String("data".into()))
+    let data = tensor
+        .borrow()
+        .get(&Value::String("data".into()))
         .ok_or_else(|| RuntimeError::new("Invalid tensor"))?;
-    let shape = tensor.borrow().get(&Value::String("shape".into()))
+    let shape = tensor
+        .borrow()
+        .get(&Value::String("shape".into()))
         .ok_or_else(|| RuntimeError::new("Invalid tensor"))?;
     let shape_arr = match shape {
         Value::Array(s) => s,
         _ => return Err(RuntimeError::new("Invalid tensor shape")),
     };
-    let shape_vec: Vec<usize> = shape_arr.borrow().iter()
-        .map(|v| match v { Value::Number(n) => *n as usize, _ => 0 })
+    let shape_vec: Vec<usize> = shape_arr
+        .borrow()
+        .iter()
+        .map(|v| match v {
+            Value::Number(n) => *n as usize,
+            _ => 0,
+        })
         .collect();
     let data_vec = match data {
         Value::Array(d) => d,
@@ -2011,7 +2431,9 @@ fn tensor_set(args: &[Value]) -> Result<Value, RuntimeError> {
                 Value::Number(n) => *n as usize,
                 _ => return Err(RuntimeError::new("Indices must be numbers")),
             }
-        } else { 0 };
+        } else {
+            0
+        };
         if index >= dim {
             return Err(RuntimeError::new("Index out of bounds"));
         }
@@ -2092,7 +2514,9 @@ fn tensor_transpose(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Reshapes a tensor to a new shape.
 fn tensor_reshape(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        return Err(RuntimeError::new("tensor_reshape() requires a tensor and new shape"));
+        return Err(RuntimeError::new(
+            "tensor_reshape() requires a tensor and new shape",
+        ));
     }
     let data = extract_tensor_data(&args[0])?;
     let mut new_shape = Vec::new();
@@ -2111,7 +2535,9 @@ fn tensor_reshape(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let total: usize = new_shape.iter().product();
     if total != data.len() {
-        return Err(RuntimeError::new("New shape must have same number of elements"));
+        return Err(RuntimeError::new(
+            "New shape must have same number of elements",
+        ));
     }
     create_tensor_result(data, new_shape)
 }
@@ -2160,7 +2586,9 @@ fn softmax(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Linear layer: y = x @ w.t() + b
 fn linear(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 3 {
-        return Err(RuntimeError::new("linear() requires input, weight, and bias tensors"));
+        return Err(RuntimeError::new(
+            "linear() requires input, weight, and bias tensors",
+        ));
     }
     let x = extract_tensor_data(&args[0])?;
     let w = extract_tensor_data(&args[1])?;
@@ -2191,7 +2619,9 @@ fn linear(args: &[Value]) -> Result<Value, RuntimeError> {
 /// 2D convolution (simplified - no padding/stride/dilation).
 fn conv2d(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 3 {
-        return Err(RuntimeError::new("conv2d() requires input, weight, and bias"));
+        return Err(RuntimeError::new(
+            "conv2d() requires input, weight, and bias",
+        ));
     }
     let x = extract_tensor_data(&args[0])?;
     let w = extract_tensor_data(&args[1])?;
@@ -2199,27 +2629,30 @@ fn conv2d(args: &[Value]) -> Result<Value, RuntimeError> {
     let x_shape = extract_tensor_shape(&args[0])?;
     let w_shape = extract_tensor_shape(&args[1])?;
     if x_shape.len() != 4 || w_shape.len() != 4 {
-        return Err(RuntimeError::new("conv2d() requires 4D input (N,C,H,W) and weight (O,I,H,W)"));
+        return Err(RuntimeError::new(
+            "conv2d() requires 4D input (N,C,H,W) and weight (O,I,H,W)",
+        ));
     }
     let (n, c_in, h, w_in) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
     let (c_out, c_in_w, kh, kw) = (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
     if c_in != c_in_w {
-        return Err(RuntimeError::new("Input channels must match weight channels"));
+        return Err(RuntimeError::new(
+            "Input channels must match weight channels",
+        ));
     }
     let h_out = h - kh + 1;
     let w_out = w_in - kw + 1;
     let mut result = vec![0.0; n * c_out * h_out * w_out];
-    for ni in 0..n {
-        for co in 0..c_out {
+    for (ni, x_batch) in x.chunks(c_in * h * w_in).enumerate().take(n) {
+        for (co, w_batch) in w.chunks(c_in * kh * kw).enumerate().take(c_out) {
             for hi in 0..h_out {
                 for wi in 0..w_out {
                     let mut sum = b[co];
-                    for ci in 0..c_in {
-                        for kh_i in 0..kh {
-                            for kw_i in 0..kw {
-                                let x_idx = ((ni * c_in + ci) * h + hi + kh_i) * w_in + wi + kw_i;
-                                let w_idx = ((co * c_in + ci) * kh + kh_i) * kw + kw_i;
-                                sum += x[x_idx] * w[w_idx];
+                    for (ci, w_channel) in w_batch.chunks(kh * kw).enumerate() {
+                        for (kh_i, w_row) in w_channel.chunks(kw).enumerate() {
+                            let x_row = &x_batch[(ci * h + hi + kh_i) * w_in + wi..];
+                            for (kw_i, weight) in w_row.iter().enumerate() {
+                                sum += x_row[kw_i] * weight;
                             }
                         }
                     }
@@ -2235,14 +2668,18 @@ fn conv2d(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Mean squared error loss.
 fn mse_loss(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        return Err(RuntimeError::new("mse_loss() requires predictions and targets"));
+        return Err(RuntimeError::new(
+            "mse_loss() requires predictions and targets",
+        ));
     }
     let pred = extract_tensor_data(&args[0])?;
     let target = extract_tensor_data(&args[1])?;
     if pred.len() != target.len() {
         return Err(RuntimeError::new("Shape mismatch in mse_loss"));
     }
-    let sum: f64 = pred.iter().zip(target.iter())
+    let sum: f64 = pred
+        .iter()
+        .zip(target.iter())
         .map(|(p, t)| (p - t).powi(2))
         .sum();
     Ok(Value::Number(sum / pred.len() as f64))
@@ -2251,14 +2688,18 @@ fn mse_loss(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Cross entropy loss (for classification).
 fn cross_entropy_loss(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        return Err(RuntimeError::new("cross_entropy_loss() requires predictions and targets"));
+        return Err(RuntimeError::new(
+            "cross_entropy_loss() requires predictions and targets",
+        ));
     }
     let pred = extract_tensor_data(&args[0])?;
     let target = extract_tensor_data(&args[1])?;
     if pred.len() != target.len() {
         return Err(RuntimeError::new("Shape mismatch in cross_entropy_loss"));
     }
-    let sum: f64 = pred.iter().zip(target.iter())
+    let sum: f64 = pred
+        .iter()
+        .zip(target.iter())
         .map(|(p, t)| -t * p.max(1e-15).ln())
         .sum();
     Ok(Value::Number(sum / pred.len() as f64))
@@ -2267,7 +2708,9 @@ fn cross_entropy_loss(args: &[Value]) -> Result<Value, RuntimeError> {
 /// SGD optimizer step: param -= lr * grad
 fn sgd_step(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 3 {
-        return Err(RuntimeError::new("sgd_step() requires param, grad, and learning_rate"));
+        return Err(RuntimeError::new(
+            "sgd_step() requires param, grad, and learning_rate",
+        ));
     }
     let param = extract_tensor_data(&args[0])?;
     let grad = extract_tensor_data(&args[1])?;
@@ -2289,14 +2732,22 @@ fn sgd_step(args: &[Value]) -> Result<Value, RuntimeError> {
 /// Adam optimizer step (simplified).
 fn adam_step(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 6 {
-        return Err(RuntimeError::new("adam_step() requires param, grad, m, v, t, lr"));
+        return Err(RuntimeError::new(
+            "adam_step() requires param, grad, m, v, t, lr",
+        ));
     }
     let param = extract_tensor_data(&args[0])?;
     let grad = extract_tensor_data(&args[1])?;
     let m = extract_tensor_data(&args[2])?;
     let v = extract_tensor_data(&args[3])?;
-    let t = match &args[4] { Value::Number(n) => *n as usize, _ => return Err(RuntimeError::new("t must be a number")) };
-    let lr = match &args[5] { Value::Number(n) => *n, _ => return Err(RuntimeError::new("lr must be a number")) };
+    let t = match &args[4] {
+        Value::Number(n) => *n as usize,
+        _ => return Err(RuntimeError::new("t must be a number")),
+    };
+    let lr = match &args[5] {
+        Value::Number(n) => *n,
+        _ => return Err(RuntimeError::new("lr must be a number")),
+    };
     if param.len() != grad.len() || param.len() != m.len() || param.len() != v.len() {
         return Err(RuntimeError::new("All tensors must have same shape"));
     }
@@ -2316,23 +2767,39 @@ fn adam_step(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let shape = extract_tensor_shape(&args[0])?;
     let mut result = Map::new();
-    result.insert(Value::String("param".into()), create_tensor_value(new_param, shape.clone())?)?;
-    result.insert(Value::String("m".into()), create_tensor_value(new_m, shape.clone())?)?;
-    result.insert(Value::String("v".into()), create_tensor_value(new_v, shape)?)?;
+    result.insert(
+        Value::String("param".into()),
+        create_tensor_value(new_param, shape.clone())?,
+    )?;
+    result.insert(
+        Value::String("m".into()),
+        create_tensor_value(new_m, shape.clone())?,
+    )?;
+    result.insert(
+        Value::String("v".into()),
+        create_tensor_value(new_v, shape)?,
+    )?;
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
 
 /// Splits data into train/test sets.
 fn train_test_split(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(RuntimeError::new("train_test_split() requires X, y, and optional test_size"));
+        return Err(RuntimeError::new(
+            "train_test_split() requires X, y, and optional test_size",
+        ));
     }
     let x_data = extract_tensor_data(&args[0])?;
     let y_data = extract_tensor_data(&args[1])?;
     let x_shape = extract_tensor_shape(&args[0])?;
     let test_size = if args.len() == 3 {
-        match &args[2] { Value::Number(n) => *n, _ => return Err(RuntimeError::new("test_size must be a number")) }
-    } else { 0.2 };
+        match &args[2] {
+            Value::Number(n) => *n,
+            _ => return Err(RuntimeError::new("test_size must be a number")),
+        }
+    } else {
+        0.2
+    };
     let n_samples = x_shape[0];
     let n_test = (n_samples as f64 * test_size) as usize;
     let n_train = n_samples - n_test;
@@ -2350,24 +2817,40 @@ fn train_test_split(args: &[Value]) -> Result<Value, RuntimeError> {
         y_test.push(y_data[i]);
     }
     let mut result = Map::new();
-    result.insert(Value::String("X_train".into()), create_tensor_value(x_train, vec![n_train, x_features])?)?;
-    result.insert(Value::String("X_test".into()), create_tensor_value(x_test, vec![n_test, x_features])?)?;
-    result.insert(Value::String("y_train".into()), create_tensor_value(y_train, vec![n_train])?)?;
-    result.insert(Value::String("y_test".into()), create_tensor_value(y_test, vec![n_test])?)?;
+    result.insert(
+        Value::String("X_train".into()),
+        create_tensor_value(x_train, vec![n_train, x_features])?,
+    )?;
+    result.insert(
+        Value::String("X_test".into()),
+        create_tensor_value(x_test, vec![n_test, x_features])?,
+    )?;
+    result.insert(
+        Value::String("y_train".into()),
+        create_tensor_value(y_train, vec![n_train])?,
+    )?;
+    result.insert(
+        Value::String("y_test".into()),
+        create_tensor_value(y_test, vec![n_test])?,
+    )?;
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
 
 /// Computes accuracy between predictions and targets.
 fn accuracy(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        return Err(RuntimeError::new("accuracy() requires predictions and targets"));
+        return Err(RuntimeError::new(
+            "accuracy() requires predictions and targets",
+        ));
     }
     let pred = extract_tensor_data(&args[0])?;
     let target = extract_tensor_data(&args[1])?;
     if pred.len() != target.len() {
         return Err(RuntimeError::new("Shape mismatch in accuracy"));
     }
-    let correct = pred.iter().zip(target.iter())
+    let correct = pred
+        .iter()
+        .zip(target.iter())
         .filter(|(p, t)| (**p - **t).abs() < 0.5)
         .count();
     Ok(Value::Number(correct as f64 / pred.len() as f64))
@@ -2385,7 +2868,9 @@ fn argmax(args: &[Value]) -> Result<Value, RuntimeError> {
     let mut result = Vec::with_capacity(n_rows);
     for i in 0..n_rows {
         let row = &data[i * last_dim..(i + 1) * last_dim];
-        let max_idx = row.iter().enumerate()
+        let max_idx = row
+            .iter()
+            .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
             .map(|(i, _)| i)
             .unwrap_or(0);
@@ -2393,7 +2878,9 @@ fn argmax(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let mut new_shape = shape;
     new_shape.pop();
-    if new_shape.is_empty() { new_shape = vec![1]; }
+    if new_shape.is_empty() {
+        new_shape = vec![1];
+    }
     create_tensor_result(result, new_shape)
 }
 
@@ -2436,11 +2923,18 @@ fn flatten_tensor(value: &Value) -> Result<(Vec<Value>, Vec<usize>), RuntimeErro
 fn extract_tensor_data(tensor: &Value) -> Result<Vec<f64>, RuntimeError> {
     match tensor {
         Value::Map(m) => {
-            let data = m.borrow().get(&Value::String("data".into()))
+            let data = m
+                .borrow()
+                .get(&Value::String("data".into()))
                 .ok_or_else(|| RuntimeError::new("Invalid tensor"))?;
             match data {
-                Value::Array(arr) => Ok(arr.borrow().iter()
-                    .map(|v| match v { Value::Number(n) => *n, _ => 0.0 })
+                Value::Array(arr) => Ok(arr
+                    .borrow()
+                    .iter()
+                    .map(|v| match v {
+                        Value::Number(n) => *n,
+                        _ => 0.0,
+                    })
                     .collect()),
                 _ => Err(RuntimeError::new("Invalid tensor data")),
             }
@@ -2452,11 +2946,18 @@ fn extract_tensor_data(tensor: &Value) -> Result<Vec<f64>, RuntimeError> {
 fn extract_tensor_shape(tensor: &Value) -> Result<Vec<usize>, RuntimeError> {
     match tensor {
         Value::Map(m) => {
-            let shape = m.borrow().get(&Value::String("shape".into()))
+            let shape = m
+                .borrow()
+                .get(&Value::String("shape".into()))
                 .ok_or_else(|| RuntimeError::new("Invalid tensor"))?;
             match shape {
-                Value::Array(arr) => Ok(arr.borrow().iter()
-                    .map(|v| match v { Value::Number(n) => *n as usize, _ => 0 })
+                Value::Array(arr) => Ok(arr
+                    .borrow()
+                    .iter()
+                    .map(|v| match v {
+                        Value::Number(n) => *n as usize,
+                        _ => 0,
+                    })
                     .collect()),
                 _ => Err(RuntimeError::new("Invalid tensor shape")),
             }
@@ -2466,7 +2967,9 @@ fn extract_tensor_shape(tensor: &Value) -> Result<Vec<usize>, RuntimeError> {
 }
 
 fn binary_tensor_op<F>(args: &[Value], op: F) -> Result<Value, RuntimeError>
-where F: Fn(f64, f64) -> f64 {
+where
+    F: Fn(f64, f64) -> f64,
+{
     let a = extract_tensor_data(&args[0])?;
     let b = extract_tensor_data(&args[1])?;
     let a_shape = extract_tensor_shape(&args[0])?;
@@ -2479,7 +2982,9 @@ where F: Fn(f64, f64) -> f64 {
 }
 
 fn unary_tensor_op<F>(args: &[Value], op: F) -> Result<Value, RuntimeError>
-where F: Fn(f64) -> f64 {
+where
+    F: Fn(f64) -> f64,
+{
     let data = extract_tensor_data(&args[0])?;
     let shape = extract_tensor_shape(&args[0])?;
     let result: Vec<f64> = data.iter().map(|x| op(*x)).collect();
@@ -2490,8 +2995,14 @@ fn create_tensor_result(data: Vec<f64>, shape: Vec<usize>) -> Result<Value, Runt
     let values: Vec<Value> = data.into_iter().map(Value::Number).collect();
     let shape_values: Vec<Value> = shape.into_iter().map(|s| Value::Number(s as f64)).collect();
     let mut result = Map::new();
-    result.insert(Value::String("data".into()), Value::Array(Rc::new(RefCell::new(values))))?;
-    result.insert(Value::String("shape".into()), Value::Array(Rc::new(RefCell::new(shape_values))))?;
+    result.insert(
+        Value::String("data".into()),
+        Value::Array(Rc::new(RefCell::new(values))),
+    )?;
+    result.insert(
+        Value::String("shape".into()),
+        Value::Array(Rc::new(RefCell::new(shape_values))),
+    )?;
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
 
@@ -2499,8 +3010,14 @@ fn create_tensor_value(data: Vec<f64>, shape: Vec<usize>) -> Result<Value, Runti
     let values: Vec<Value> = data.into_iter().map(Value::Number).collect();
     let shape_values: Vec<Value> = shape.into_iter().map(|s| Value::Number(s as f64)).collect();
     let mut result = Map::new();
-    result.insert(Value::String("data".into()), Value::Array(Rc::new(RefCell::new(values))))?;
-    result.insert(Value::String("shape".into()), Value::Array(Rc::new(RefCell::new(shape_values))))?;
+    result.insert(
+        Value::String("data".into()),
+        Value::Array(Rc::new(RefCell::new(values))),
+    )?;
+    result.insert(
+        Value::String("shape".into()),
+        Value::Array(Rc::new(RefCell::new(shape_values))),
+    )?;
     Ok(Value::Map(Rc::new(RefCell::new(result))))
 }
 
@@ -2572,8 +3089,11 @@ fn pop(args: &[Value]) -> Result<Value, RuntimeError> {
 /// easy to get wrong (`1 + 2` adds before it concatenates) and hard to read.
 /// Arrays render exactly as `print` renders them.
 fn concat(args: &[Value]) -> Result<Value, RuntimeError> {
-    let rendered: Vec<String> = args.iter().map(format_value).collect();
-    Ok(Value::String(rendered.concat()))
+    let mut output = String::new();
+    for arg in args {
+        output.push_str(&format_value(arg));
+    }
+    Ok(Value::String(output))
 }
 
 fn join(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -2593,8 +3113,14 @@ fn join(args: &[Value]) -> Result<Value, RuntimeError> {
         }
         None => String::new(),
     };
-    let rendered: Vec<String> = elements.borrow().iter().map(format_value).collect();
-    Ok(Value::String(rendered.join(&separator)))
+    let mut result = String::new();
+    for (i, elem) in elements.borrow().iter().enumerate() {
+        if i > 0 {
+            result.push_str(&separator);
+        }
+        result.push_str(&format_value(elem));
+    }
+    Ok(Value::String(result))
 }
 
 fn split(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -2717,9 +3243,9 @@ fn index_of_value(haystack: &Value, needle: &Value) -> Result<Option<usize>, Run
     match haystack {
         Value::String(text) => {
             let needle = string("index_of", needle)?;
-            Ok(text.find(&needle).map(|byte_index| {
-                text[..byte_index].chars().count()
-            }))
+            Ok(text
+                .find(&needle)
+                .map(|byte_index| text[..byte_index].chars().count()))
         }
         Value::Array(elements) => Ok(elements.borrow().iter().position(|item| item == needle)),
         other => Err(RuntimeError::new(&format!(
@@ -2761,9 +3287,7 @@ fn repeat(args: &[Value]) -> Result<Value, RuntimeError> {
     let text = string("repeat", &args[0])?;
     let count = whole_number("repeat", &args[1])?;
     if count < 0 {
-        return Err(RuntimeError::new(
-            "repeat() requires a non-negative count",
-        ));
+        return Err(RuntimeError::new("repeat() requires a non-negative count"));
     }
     // Guard against a typo turning into an out-of-memory abort.
     let total = text.len() as f64 * count as f64;
@@ -2839,11 +3363,7 @@ fn range(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let (start, stop, step) = match args.len() {
         1 => (0.0, number("range", &args[0])?, 1.0),
-        2 => (
-            number("range", &args[0])?,
-            number("range", &args[1])?,
-            1.0,
-        ),
+        2 => (number("range", &args[0])?, number("range", &args[1])?, 1.0),
         _ => (
             number("range", &args[0])?,
             number("range", &args[1])?,
@@ -2884,20 +3404,38 @@ fn whole_number(name: &str, value: &Value) -> Result<i64, RuntimeError> {
     Ok(number as i64)
 }
 
+// SQLite support: `rusqlite` and its bundled C library.
+#[cfg(not(feature = "db"))]
+/// A stand-in so [`crate::ast::Value::DbConnection`] exists in a build without
+/// SQLite. Nothing can construct one, so no program can reach it.
+#[derive(Debug, Clone)]
+pub struct DbConnection;
+
+#[cfg(feature = "db")]
 /// Database connection wrapper
 #[derive(Debug, Clone)]
 pub struct DbConnection {
     pub conn: Arc<StdMutex<Option<rusqlite::Connection>>>,
 }
 
+#[cfg(feature = "db")]
 impl DbConnection {
     pub fn new(conn: rusqlite::Connection) -> Self {
-        Self { conn: Arc::new(StdMutex::new(Some(conn))) }
+        Self {
+            conn: Arc::new(StdMutex::new(Some(conn))),
+        }
     }
 }
 
+#[cfg(not(feature = "gui"))]
+/// A stand-in so [`crate::ast::Value::GuiWindow`] exists in a build without the
+/// GUI. Nothing can construct one, so no program can reach it.
+#[derive(Debug, Clone)]
+pub struct GuiWindow;
+
 /// GUI window handle for native GUI framework
 #[derive(Debug, Clone)]
+#[cfg(feature = "gui")]
 pub struct GuiWindow {
     pub title: String,
     pub widgets: Arc<StdMutex<Vec<GuiWidget>>>,
@@ -2906,6 +3444,7 @@ pub struct GuiWindow {
     pub running: Arc<StdMutex<bool>>,
 }
 
+#[cfg(feature = "gui")]
 impl GuiWindow {
     pub fn new(title: String) -> Self {
         let (tx, rx) = mpsc::channel();
@@ -2919,12 +3458,14 @@ impl GuiWindow {
     }
 }
 
+#[cfg(feature = "gui")]
 impl PartialEq for GuiWindow {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.widgets, &other.widgets)
     }
 }
 
+#[cfg(feature = "gui")]
 impl Default for GuiWindow {
     fn default() -> Self {
         Self::new("Nect Window".to_string())
@@ -2933,6 +3474,7 @@ impl Default for GuiWindow {
 
 /// GUI widget types
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(feature = "gui")]
 pub enum GuiWidget {
     Button {
         id: String,
@@ -2978,6 +3520,7 @@ pub enum GuiWidget {
     },
 }
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(feature = "gui")]
 pub enum GuiEventType {
     Click,
     Change,
@@ -2987,6 +3530,7 @@ pub enum GuiEventType {
 
 /// GUI event from user interactions
 #[derive(Debug, Clone)]
+#[cfg(feature = "gui")]
 pub struct GuiEvent {
     pub widget_id: String,
     pub event_type: GuiEventType,
@@ -2994,12 +3538,14 @@ pub struct GuiEvent {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(feature = "gui")]
 pub enum GuiEventValue {
     String(String),
     Number(f64),
     Boolean(bool),
 }
 
+#[cfg(feature = "gui")]
 impl GuiEventValue {
     fn to_value(&self) -> Value {
         match self {
@@ -3010,6 +3556,7 @@ impl GuiEventValue {
     }
 }
 
+#[cfg(feature = "gui")]
 impl GuiEvent {
     pub fn click(id: String) -> Self {
         Self {
@@ -3043,13 +3590,19 @@ impl GuiEvent {
 
 /// Opens a SQLite database connection.
 /// Usage: db_open(path) - returns a connection handle
+#[cfg(feature = "db")]
 fn db_open(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::new("db_open() requires a database path"));
     }
     let path = match &args[0] {
         Value::String(s) => s,
-        other => return Err(RuntimeError::new(&format!("db_open() requires a string path, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_open() requires a string path, got {}",
+                type_of(other)
+            )));
+        }
     };
     let conn = rusqlite::Connection::open(path)
         .map_err(|e| RuntimeError::new(&format!("Failed to open database: {}", e)))?;
@@ -3059,92 +3612,156 @@ fn db_open(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Closes a SQLite database connection.
 /// Usage: db_close(conn)
+#[cfg(feature = "db")]
 fn db_close(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::new("db_close() requires a connection"));
     }
     match &args[0] {
         Value::DbConnection(db) => {
-            let mut guard = db.borrow_mut();
+            let guard = db.borrow_mut();
             if let Some(conn) = guard.conn.lock().unwrap().take() {
                 drop(conn);
             }
             Ok(Value::Null)
         }
-        other => Err(RuntimeError::new(&format!("db_close() requires a database connection, got {}", type_of(other)))),
+        other => Err(RuntimeError::new(&format!(
+            "db_close() requires a database connection, got {}",
+            type_of(other)
+        ))),
     }
 }
 
 /// Executes a SQL statement (non-query).
 /// Usage: db_exec(conn, sql) - returns number of affected rows
+#[cfg(feature = "db")]
 fn db_exec(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        return Err(RuntimeError::new("db_exec() requires a connection and SQL string"));
+        return Err(RuntimeError::new(
+            "db_exec() requires a connection and SQL string",
+        ));
     }
     let conn = match &args[0] {
         Value::DbConnection(db) => db,
-        other => return Err(RuntimeError::new(&format!("db_exec() requires a database connection, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_exec() requires a database connection, got {}",
+                type_of(other)
+            )));
+        }
     };
     let sql = match &args[1] {
         Value::String(s) => s,
-        other => return Err(RuntimeError::new(&format!("db_exec() requires a string SQL, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_exec() requires a string SQL, got {}",
+                type_of(other)
+            )));
+        }
     };
     let conn_guard = conn.borrow();
     let conn = conn_guard.conn.lock().unwrap();
-    let conn = conn.as_ref().ok_or_else(|| RuntimeError::new("Connection closed"))?;
-    let changes = conn.execute(sql, [])
+    let conn = conn
+        .as_ref()
+        .ok_or_else(|| RuntimeError::new("Connection closed"))?;
+    let changes = conn
+        .execute(sql, [])
         .map_err(|e| RuntimeError::new(&format!("SQL execution failed: {}", e)))?;
     Ok(Value::Number(changes as f64))
 }
 
 /// Executes a query and returns all rows as an array of maps.
 /// Usage: db_query(conn, sql, params_array?) - returns array of row maps
+#[cfg(feature = "db")]
 fn db_query(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(RuntimeError::new("db_query() requires a connection, SQL, and optional params array"));
+        return Err(RuntimeError::new(
+            "db_query() requires a connection, SQL, and optional params array",
+        ));
     }
     let conn = match &args[0] {
         Value::DbConnection(db) => db,
-        other => return Err(RuntimeError::new(&format!("db_query() requires a database connection, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_query() requires a database connection, got {}",
+                type_of(other)
+            )));
+        }
     };
     let sql = match &args[1] {
         Value::String(s) => s,
-        other => return Err(RuntimeError::new(&format!("db_query() requires a string SQL, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_query() requires a string SQL, got {}",
+                type_of(other)
+            )));
+        }
     };
     let params = if args.len() == 3 {
         match &args[2] {
             Value::Array(arr) => Some(arr),
             _ => return Err(RuntimeError::new("db_query() params must be an array")),
         }
-    } else { None };
+    } else {
+        None
+    };
 
     let conn_guard = conn.borrow();
     let conn = conn_guard.conn.lock().unwrap();
-    let conn = conn.as_ref().ok_or_else(|| RuntimeError::new("Connection closed"))?;
+    let conn = conn
+        .as_ref()
+        .ok_or_else(|| RuntimeError::new("Connection closed"))?;
 
-    let mut stmt = conn.prepare(sql)
+    let mut stmt = conn
+        .prepare(sql)
         .map_err(|e| RuntimeError::new(&format!("Failed to prepare statement: {}", e)))?;
 
     let param_values: Vec<Box<dyn rusqlite::ToSql>> = if let Some(arr) = params {
         arr.borrow().iter().map(|v| value_to_sql(v)).collect()
-    } else { Vec::new() };
+    } else {
+        Vec::new()
+    };
     let param_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|b| b.as_ref()).collect();
 
     // Get column names from statement before iterating
     let col_count = stmt.column_count();
     let col_names: Vec<String> = (0..col_count)
-        .map(|i| stmt.column_name(i).unwrap_or(&format!("col{}", i)).to_string())
+        .map(|i| {
+            stmt.column_name(i)
+                .unwrap_or(&format!("col{}", i))
+                .to_string()
+        })
         .collect();
 
-    let rows = stmt.query_map(param_refs.as_slice(), |row| {
-        let mut map = Map::new();
-        for (i, name) in col_names.iter().enumerate() {
-            let val = row.get_ref(i).map_err(|e| rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Null, Box::new(e)))?;
-            let v = sql_value_to_value(val).map_err(|e| rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Null, Box::new(e)))?;
-            map.insert(Value::String(name.clone()), v).map_err(|e| rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Null, Box::new(e)))?;
-        }
-        Ok(Value::Map(Rc::new(RefCell::new(map))))
-    }).map_err(|e| RuntimeError::new(&format!("Query failed: {}", e)))?;
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            let mut map = Map::new();
+            for (i, name) in col_names.iter().enumerate() {
+                let val = row.get_ref(i).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        i,
+                        rusqlite::types::Type::Null,
+                        Box::new(e),
+                    )
+                })?;
+                let v = sql_value_to_value(val).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        i,
+                        rusqlite::types::Type::Null,
+                        Box::new(e),
+                    )
+                })?;
+                map.insert(Value::String(name.clone()), v).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        i,
+                        rusqlite::types::Type::Null,
+                        Box::new(e),
+                    )
+                })?;
+            }
+            Ok(Value::Map(Rc::new(RefCell::new(map))))
+        })
+        .map_err(|e| RuntimeError::new(&format!("Query failed: {}", e)))?;
 
     let mut results = Vec::new();
     for row in rows {
@@ -3155,6 +3772,7 @@ fn db_query(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Executes a query and returns the first row as a map.
 /// Usage: db_query_row(conn, sql, params_array?) - returns row map or null
+#[cfg(feature = "db")]
 fn db_query_row(args: &[Value]) -> Result<Value, RuntimeError> {
     let results = db_query(args)?;
     match results {
@@ -3172,24 +3790,40 @@ fn db_query_row(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Executes a function within a transaction.
 /// Usage: db_transaction(conn, fn) - runs function with connection, commits on success, rolls back on error
+#[cfg(feature = "db")]
 fn db_transaction(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        return Err(RuntimeError::new("db_transaction() requires a connection and a function"));
+        return Err(RuntimeError::new(
+            "db_transaction() requires a connection and a function",
+        ));
     }
     let conn = match &args[0] {
         Value::DbConnection(db) => db,
-        other => return Err(RuntimeError::new(&format!("db_transaction() requires a database connection, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_transaction() requires a database connection, got {}",
+                type_of(other)
+            )));
+        }
     };
-    let func = match &args[1] {
+    let _func = match &args[1] {
         Value::Function(f) => f,
-        other => return Err(RuntimeError::new(&format!("db_transaction() requires a function, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_transaction() requires a function, got {}",
+                type_of(other)
+            )));
+        }
     };
 
     let conn_guard = conn.borrow();
     let mut conn = conn_guard.conn.lock().unwrap();
-    let conn = conn.as_mut().ok_or_else(|| RuntimeError::new("Connection closed"))?;
+    let conn = conn
+        .as_mut()
+        .ok_or_else(|| RuntimeError::new("Connection closed"))?;
 
-    let tx = conn.transaction()
+    let tx = conn
+        .transaction()
         .map_err(|e| RuntimeError::new(&format!("Failed to start transaction: {}", e)))?;
 
     // Note: In a real implementation, we'd need to pass the transaction to the function
@@ -3202,47 +3836,72 @@ fn db_transaction(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Returns the last inserted row ID.
 /// Usage: db_last_insert_rowid(conn)
+#[cfg(feature = "db")]
 fn db_last_insert_rowid(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
-        return Err(RuntimeError::new("db_last_insert_rowid() requires a connection"));
+        return Err(RuntimeError::new(
+            "db_last_insert_rowid() requires a connection",
+        ));
     }
     let conn = match &args[0] {
         Value::DbConnection(db) => db,
-        other => return Err(RuntimeError::new(&format!("db_last_insert_rowid() requires a database connection, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_last_insert_rowid() requires a database connection, got {}",
+                type_of(other)
+            )));
+        }
     };
     let conn_guard = conn.borrow();
     let conn = conn_guard.conn.lock().unwrap();
-    let conn = conn.as_ref().ok_or_else(|| RuntimeError::new("Connection closed"))?;
+    let conn = conn
+        .as_ref()
+        .ok_or_else(|| RuntimeError::new("Connection closed"))?;
     Ok(Value::Number(conn.last_insert_rowid() as f64))
 }
 
 /// Returns the number of changed rows from the last operation.
 /// Usage: db_changes(conn)
+#[cfg(feature = "db")]
 fn db_changes(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeError::new("db_changes() requires a connection"));
     }
     let conn = match &args[0] {
         Value::DbConnection(db) => db,
-        other => return Err(RuntimeError::new(&format!("db_changes() requires a database connection, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "db_changes() requires a database connection, got {}",
+                type_of(other)
+            )));
+        }
     };
     let conn_guard = conn.borrow();
     let conn = conn_guard.conn.lock().unwrap();
-    let conn = conn.as_ref().ok_or_else(|| RuntimeError::new("Connection closed"))?;
+    let conn = conn
+        .as_ref()
+        .ok_or_else(|| RuntimeError::new("Connection closed"))?;
     Ok(Value::Number(conn.changes() as f64))
 }
 
+// GUI framework: `egui`/`eframe`, about 150 of the 690 crates.
 // ============================================================================
 // GUI Framework (Phase 6)
 // ============================================================================
 
 /// Creates a new GUI window.
 /// Usage: gui_window(title) - returns a window handle
+#[cfg(feature = "gui")]
 fn gui_window(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_window", args, 1)?;
     let title = match &args[0] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_window() requires a string title, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_window() requires a string title, got {}",
+                type_of(other)
+            )));
+        }
     };
     let window = GuiWindow::new(title);
     Ok(Value::GuiWindow(Rc::new(RefCell::new(window))))
@@ -3250,52 +3909,97 @@ fn gui_window(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Creates a button widget.
 /// Usage: gui_button(window, id, label, on_click_function_name?) - adds button to window
+#[cfg(feature = "gui")]
 fn gui_button(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 3 || args.len() > 4 {
-        return Err(RuntimeError::new("gui_button() requires window, id, label, and optional on_click function name"));
+        return Err(RuntimeError::new(
+            "gui_button() requires window, id, label, and optional on_click function name",
+        ));
     }
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_button() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_button() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_button() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_button() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
     let label = match &args[2] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_button() requires a string label, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_button() requires a string label, got {}",
+                type_of(other)
+            )));
+        }
     };
     let on_click = if args.len() == 4 {
         match &args[3] {
             Value::String(s) => Some(s.clone()),
             Value::Null => None,
-            other => return Err(RuntimeError::new(&format!("gui_button() on_click must be a string or null, got {}", type_of(other)))),
+            other => {
+                return Err(RuntimeError::new(&format!(
+                    "gui_button() on_click must be a string or null, got {}",
+                    type_of(other)
+                )));
+            }
         }
-    } else { None };
-    
-    let widget = GuiWidget::Button { id, label, on_click };
+    } else {
+        None
+    };
+
+    let widget = GuiWidget::Button {
+        id,
+        label,
+        on_click,
+    };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
 }
 
 /// Creates a label widget.
 /// Usage: gui_label(window, id, text) - adds label to window
+#[cfg(feature = "gui")]
 fn gui_label(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_label", args, 3)?;
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_label() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_label() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_label() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_label() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
     let text = match &args[2] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_label() requires a string text, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_label() requires a string text, got {}",
+                type_of(other)
+            )));
+        }
     };
-    
+
     let widget = GuiWidget::Label { id, text };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
@@ -3303,87 +4007,170 @@ fn gui_label(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Creates a text input widget.
 /// Usage: gui_text_input(window, id, placeholder, on_change_function_name?) - adds text input to window
+#[cfg(feature = "gui")]
 fn gui_text_input(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 3 || args.len() > 4 {
-        return Err(RuntimeError::new("gui_text_input() requires window, id, placeholder, and optional on_change function name"));
+        return Err(RuntimeError::new(
+            "gui_text_input() requires window, id, placeholder, and optional on_change function name",
+        ));
     }
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_text_input() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_text_input() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_text_input() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_text_input() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
     let placeholder = match &args[2] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_text_input() requires a string placeholder, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_text_input() requires a string placeholder, got {}",
+                type_of(other)
+            )));
+        }
     };
     let on_change = if args.len() == 4 {
         match &args[3] {
             Value::String(s) => Some(s.clone()),
             Value::Null => None,
-            other => return Err(RuntimeError::new(&format!("gui_text_input() on_change must be a string or null, got {}", type_of(other)))),
+            other => {
+                return Err(RuntimeError::new(&format!(
+                    "gui_text_input() on_change must be a string or null, got {}",
+                    type_of(other)
+                )));
+            }
         }
-    } else { None };
-    
-    let widget = GuiWidget::TextInput { id, placeholder, value: String::new(), on_change };
+    } else {
+        None
+    };
+
+    let widget = GuiWidget::TextInput {
+        id,
+        placeholder,
+        value: String::new(),
+        on_change,
+    };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
 }
 
 /// Creates a checkbox widget.
 /// Usage: gui_checkbox(window, id, label, checked, on_change_function_name?) - adds checkbox to window
+#[cfg(feature = "gui")]
 fn gui_checkbox(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 4 || args.len() > 5 {
-        return Err(RuntimeError::new("gui_checkbox() requires window, id, label, checked, and optional on_change function name"));
+        return Err(RuntimeError::new(
+            "gui_checkbox() requires window, id, label, checked, and optional on_change function name",
+        ));
     }
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_checkbox() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_checkbox() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_checkbox() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_checkbox() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
     let label = match &args[2] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_checkbox() requires a string label, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_checkbox() requires a string label, got {}",
+                type_of(other)
+            )));
+        }
     };
     let checked = match &args[3] {
         Value::Boolean(b) => *b,
-        other => return Err(RuntimeError::new(&format!("gui_checkbox() requires a boolean checked, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_checkbox() requires a boolean checked, got {}",
+                type_of(other)
+            )));
+        }
     };
     let on_change = if args.len() == 5 {
         match &args[4] {
             Value::String(s) => Some(s.clone()),
             Value::Null => None,
-            other => return Err(RuntimeError::new(&format!("gui_checkbox() on_change must be a string or null, got {}", type_of(other)))),
+            other => {
+                return Err(RuntimeError::new(&format!(
+                    "gui_checkbox() on_change must be a string or null, got {}",
+                    type_of(other)
+                )));
+            }
         }
-    } else { None };
-    
-    let widget = GuiWidget::Checkbox { id, label, checked, on_change };
+    } else {
+        None
+    };
+
+    let widget = GuiWidget::Checkbox {
+        id,
+        label,
+        checked,
+        on_change,
+    };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
 }
 
 /// Creates a slider widget.
 /// Usage: gui_slider(window, id, label, min, max, value, on_change_function_name?) - adds slider to window
+#[cfg(feature = "gui")]
 fn gui_slider(args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 6 || args.len() > 7 {
-        return Err(RuntimeError::new("gui_slider() requires window, id, label, min, max, value, and optional on_change function name"));
+        return Err(RuntimeError::new(
+            "gui_slider() requires window, id, label, min, max, value, and optional on_change function name",
+        ));
     }
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_slider() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_slider() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_slider() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_slider() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
     let label = match &args[2] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_slider() requires a string label, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_slider() requires a string label, got {}",
+                type_of(other)
+            )));
+        }
     };
     let min = number("gui_slider", &args[3])?;
     let max = number("gui_slider", &args[4])?;
@@ -3392,59 +4179,107 @@ fn gui_slider(args: &[Value]) -> Result<Value, RuntimeError> {
         match &args[6] {
             Value::String(s) => Some(s.clone()),
             Value::Null => None,
-            other => return Err(RuntimeError::new(&format!("gui_slider() on_change must be a string or null, got {}", type_of(other)))),
+            other => {
+                return Err(RuntimeError::new(&format!(
+                    "gui_slider() on_change must be a string or null, got {}",
+                    type_of(other)
+                )));
+            }
         }
-    } else { None };
-    
-    let widget = GuiWidget::Slider { id, label, min, max, value, on_change };
+    } else {
+        None
+    };
+
+    let widget = GuiWidget::Slider {
+        id,
+        label,
+        min,
+        max,
+        value,
+        on_change,
+    };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
 }
 
 /// Creates a vertical stack layout.
 /// Usage: gui_vstack(window, id, children_array) - adds vertical stack to window
+#[cfg(feature = "gui")]
 fn gui_vstack(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_vstack", args, 3)?;
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_vstack() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_vstack() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_vstack() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_vstack() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
     // For simplicity, we'll just store the id - in a full implementation we'd handle nested widgets
-    let widget = GuiWidget::VStack { id, children: Vec::new() };
+    let widget = GuiWidget::VStack {
+        id,
+        children: Vec::new(),
+    };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
 }
 
 /// Creates a horizontal stack layout.
 /// Usage: gui_hstack(window, id, children_array) - adds horizontal stack to window
+#[cfg(feature = "gui")]
 fn gui_hstack(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_hstack", args, 3)?;
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_hstack() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_hstack() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
     let id = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(RuntimeError::new(&format!("gui_hstack() requires a string id, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_hstack() requires a string id, got {}",
+                type_of(other)
+            )));
+        }
     };
-    let widget = GuiWidget::HStack { id, children: Vec::new() };
+    let widget = GuiWidget::HStack {
+        id,
+        children: Vec::new(),
+    };
     window.borrow().widgets.lock().unwrap().push(widget);
     Ok(Value::Null)
 }
 
 /// Shows the GUI window and starts the event loop.
 /// Usage: gui_show(window) - blocks until window is closed
+#[cfg(feature = "gui")]
 fn gui_show(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_show", args, 1)?;
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_show() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_show() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
-    
+
     // Clone what we need for the event loop
     let mut window_clone = window.borrow().clone();
     let widgets = window_clone.widgets.clone();
@@ -3452,85 +4287,118 @@ fn gui_show(args: &[Value]) -> Result<Value, RuntimeError> {
     let running = window_clone.running.clone();
     let event_tx = window_clone.event_tx.clone();
     let event_rx = window_clone.event_rx.take();
-    
+
     // Run the GUI in a separate thread since it blocks
     let handle = std::thread::spawn(move || {
         let options = eframe::NativeOptions::default();
         let _ = eframe::run_native(
             &title,
             options,
-            Box::new(move |cc| {
+            Box::new(move |_cc| {
                 Ok(Box::new(GuiApp {
-                    widgets: widgets,
-                    running: running,
-                    event_tx: event_tx,
-                    event_rx: event_rx,
+                    widgets,
+                    running,
+                    event_tx,
+                    event_rx,
                 }))
             }),
         );
     });
-    
-    handle.join().map_err(|_| RuntimeError::new("GUI thread panicked"))?;
+
+    handle
+        .join()
+        .map_err(|_| RuntimeError::new("GUI thread panicked"))?;
     Ok(Value::Null)
 }
 
 /// Polls for GUI events.
 /// Usage: gui_poll_events(window) - returns array of events or empty array
+#[cfg(feature = "gui")]
 fn gui_poll_events(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_poll_events", args, 1)?;
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_poll_events() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_poll_events() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
-    
-    let rx = window.borrow().event_rx.as_ref()
-        .ok_or_else(|| RuntimeError::new("gui_poll_events() requires a window with event receiver"))?
+
+    let rx = window
+        .borrow()
+        .event_rx
+        .as_ref()
+        .ok_or_else(|| {
+            RuntimeError::new("gui_poll_events() requires a window with event receiver")
+        })?
         .clone();
-    
+
     let mut events = Vec::new();
     let rx_guard = rx.lock().unwrap();
     while let Ok(event) = rx_guard.try_recv() {
         let mut event_map = Map::new();
-        event_map.insert(Value::String("widget_id".into()), Value::String(event.widget_id))?;
-        event_map.insert(Value::String("event_type".into()), Value::String(format!("{:?}", event.event_type)))?;
+        event_map.insert(
+            Value::String("widget_id".into()),
+            Value::String(event.widget_id),
+        )?;
+        event_map.insert(
+            Value::String("event_type".into()),
+            Value::String(format!("{:?}", event.event_type)),
+        )?;
         if let Some(value) = event.value {
             event_map.insert(Value::String("value".into()), value.to_value())?;
         }
         events.push(Value::Map(Rc::new(RefCell::new(event_map))));
     }
-    
+
     Ok(Value::Array(Rc::new(RefCell::new(events))))
 }
 
 /// Closes the GUI window.
 /// Usage: gui_close(window)
+#[cfg(feature = "gui")]
 fn gui_close(args: &[Value]) -> Result<Value, RuntimeError> {
     require_arity("gui_close", args, 1)?;
     let window = match &args[0] {
         Value::GuiWindow(w) => w,
-        other => return Err(RuntimeError::new(&format!("gui_close() requires a window, got {}", type_of(other)))),
+        other => {
+            return Err(RuntimeError::new(&format!(
+                "gui_close() requires a window, got {}",
+                type_of(other)
+            )));
+        }
     };
-    
+
     let window_ref = window.borrow();
     let mut running = window_ref.running.lock().unwrap();
     *running = false;
-    
+
     // Send close event
     if let Some(tx) = window_ref.event_tx.as_ref() {
-        let _ = tx.lock().unwrap().send(GuiEvent::close("window".to_string()));
+        let _ = tx
+            .lock()
+            .unwrap()
+            .send(GuiEvent::close("window".to_string()));
     }
-    
+
     Ok(Value::Null)
 }
 
 // GUI application state for eframe
+#[cfg(feature = "gui")]
 struct GuiApp {
     widgets: Arc<StdMutex<Vec<GuiWidget>>>,
     running: Arc<StdMutex<bool>>,
     event_tx: Option<Arc<StdMutex<mpsc::Sender<GuiEvent>>>>,
+    // A one-shot slot rather than a read: a `Receiver` cannot be cloned, so
+    // `gui_poll_events` takes it out of the app and holds it itself.
+    #[allow(dead_code)]
     event_rx: Option<Arc<StdMutex<mpsc::Receiver<GuiEvent>>>>,
 }
 
+#[cfg(feature = "gui")]
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -3539,7 +4407,7 @@ impl eframe::App for GuiApp {
                 render_widget(ui, widget, &self.event_tx);
             }
         });
-        
+
         // Check if we should close
         let running = self.running.lock().unwrap();
         if !*running {
@@ -3548,9 +4416,18 @@ impl eframe::App for GuiApp {
     }
 }
 
-fn render_widget(ui: &mut egui::Ui, widget: &GuiWidget, event_tx: &Option<Arc<StdMutex<mpsc::Sender<GuiEvent>>>>) {
+#[cfg(feature = "gui")]
+fn render_widget(
+    ui: &mut egui::Ui,
+    widget: &GuiWidget,
+    event_tx: &Option<Arc<StdMutex<mpsc::Sender<GuiEvent>>>>,
+) {
     match widget {
-        GuiWidget::Button { id, label, on_click } => {
+        GuiWidget::Button {
+            id,
+            label,
+            on_click,
+        } => {
             if ui.button(label).clicked() {
                 if let Some(tx) = event_tx {
                     let _ = tx.lock().unwrap().send(GuiEvent::click(id.clone()));
@@ -3564,24 +4441,49 @@ fn render_widget(ui: &mut egui::Ui, widget: &GuiWidget, event_tx: &Option<Arc<St
         GuiWidget::Label { id: _, text } => {
             ui.label(text);
         }
-        GuiWidget::TextInput { id, placeholder, value: _, on_change } => {
+        GuiWidget::TextInput {
+            id: _,
+            placeholder: _,
+            value: _,
+            on_change: _,
+        } => {
             // For simplicity, we just show the input
             let _ = ui.text_edit_singleline(&mut String::new());
         }
-        GuiWidget::Checkbox { id, label, checked: _, on_change } => {
+        GuiWidget::Checkbox {
+            id,
+            label,
+            checked: _,
+            on_change: _,
+        } => {
             let mut checked = false;
-            if ui.checkbox(&mut checked, label).changed() {
-                if let Some(tx) = event_tx {
-                    let _ = tx.lock().unwrap().send(GuiEvent::change(id.clone(), GuiEventValue::Boolean(checked)));
-                }
+            if ui.checkbox(&mut checked, label).changed()
+                && let Some(tx) = event_tx
+            {
+                let _ = tx.lock().unwrap().send(GuiEvent::change(
+                    id.clone(),
+                    GuiEventValue::Boolean(checked),
+                ));
             }
         }
-        GuiWidget::Slider { id, label, min, max, value: _, on_change } => {
+        GuiWidget::Slider {
+            id,
+            label,
+            min,
+            max,
+            value: _,
+            on_change: _,
+        } => {
             let mut val = *min;
-            if ui.add(egui::Slider::new(&mut val, *min..=*max).text(label)).changed() {
-                if let Some(tx) = event_tx {
-                    let _ = tx.lock().unwrap().send(GuiEvent::change(id.clone(), GuiEventValue::Number(val)));
-                }
+            if ui
+                .add(egui::Slider::new(&mut val, *min..=*max).text(label))
+                .changed()
+                && let Some(tx) = event_tx
+            {
+                let _ = tx
+                    .lock()
+                    .unwrap()
+                    .send(GuiEvent::change(id.clone(), GuiEventValue::Number(val)));
             }
         }
         GuiWidget::VStack { id: _, children } => {
@@ -3598,7 +4500,11 @@ fn render_widget(ui: &mut egui::Ui, widget: &GuiWidget, event_tx: &Option<Arc<St
                 }
             });
         }
-        GuiWidget::Window { id: _, title: _, children } => {
+        GuiWidget::Window {
+            id: _,
+            title: _,
+            children,
+        } => {
             egui::Window::new("Window").show(ui.ctx(), |ui| {
                 for child in children {
                     render_widget(ui, child, event_tx);
@@ -3609,17 +4515,20 @@ fn render_widget(ui: &mut egui::Ui, widget: &GuiWidget, event_tx: &Option<Arc<St
 }
 
 // Helper functions for database operations
+#[cfg(feature = "db")]
 fn value_to_sql(value: &Value) -> Box<dyn rusqlite::ToSql> {
     match value {
         Value::Null => Box::new(None::<String>),
         Value::Number(n) => Box::new(*n),
         Value::String(s) => Box::new(s.clone()),
         Value::Boolean(b) => Box::new(*b),
-        _ => Box::new(format!("{}", format_value(value))),
+        _ => Box::new(format_value(value).to_string()),
     }
 }
 
+#[cfg(feature = "db")]
 fn sql_value_to_value(val: rusqlite::types::ValueRef) -> Result<Value, RuntimeError> {
+    #[cfg(feature = "db")]
     use rusqlite::types::ValueRef;
     match val {
         ValueRef::Null => Ok(Value::Null),
@@ -3686,9 +4595,10 @@ mod tests {
         assert!(m.insert(num(2.0), text("two")).is_ok());
         assert_eq!(m.len(), 2);
         assert!(matches!(m.get(&num(2.0)), Some(Value::String(s)) if s == "two"));
-        assert!(m
-            .insert(Value::Array(Rc::new(RefCell::new(Vec::new()))), Value::Null)
-            .is_err());
+        assert!(
+            m.insert(Value::Array(Rc::new(RefCell::new(Vec::new()))), Value::Null)
+                .is_err()
+        );
         assert!(m.insert(Value::Null, Value::Null).is_err());
     }
 
@@ -3726,7 +4636,9 @@ mod tests {
     fn map_indexing_errors_name_the_key() {
         let value = map(vec![("a", 1.0)]);
         assert_eq!(
-            get_index(&value, &text("z")).expect_err("missing key").message,
+            get_index(&value, &text("z"))
+                .expect_err("missing key")
+                .message,
             "map key z not found"
         );
     }
@@ -3806,10 +4718,7 @@ mod tests {
             text("lo")
         );
         // Past the end is empty, not an error.
-        assert_eq!(
-            call("slice", &[text("hello"), num(9.0)]).unwrap(),
-            text("")
-        );
+        assert_eq!(call("slice", &[text("hello"), num(9.0)]).unwrap(), text(""));
         assert!(call("slice", &[text("hello"), num(3.0), num(1.0)]).is_err());
     }
 
@@ -3820,10 +4729,7 @@ mod tests {
             num(5.0),
             "len counts characters"
         );
-        assert_eq!(
-            call("upper", &[text("ab")]).unwrap(),
-            text("AB")
-        );
+        assert_eq!(call("upper", &[text("ab")]).unwrap(), text("AB"));
         assert_eq!(
             call("index_of", &[text("banana"), text("na")]).unwrap(),
             num(2.0)
@@ -3844,7 +4750,10 @@ mod tests {
             call("join", &[list(vec![num(1.0), text("b")]), text("-")]).unwrap(),
             text("1-b")
         );
-        assert_eq!(call("repeat", &[text("ab"), num(2.0)]).unwrap(), text("abab"));
+        assert_eq!(
+            call("repeat", &[text("ab"), num(2.0)]).unwrap(),
+            text("abab")
+        );
         assert!(call("split", &[text("ab"), text("")]).is_err());
         assert!(call("repeat", &[text("ab"), num(1.5)]).is_err());
     }
@@ -3856,14 +4765,8 @@ mod tests {
             call("push", &[items.clone(), num(1.0), num(2.0)]).unwrap(),
             list(vec![num(1.0), num(2.0)])
         );
-        assert_eq!(
-            call("pop", std::slice::from_ref(&items)).unwrap(),
-            num(2.0)
-        );
-        assert_eq!(
-            call("len", std::slice::from_ref(&items)).unwrap(),
-            num(1.0)
-        );
+        assert_eq!(call("pop", std::slice::from_ref(&items)).unwrap(), num(2.0));
+        assert_eq!(call("len", std::slice::from_ref(&items)).unwrap(), num(1.0));
         let empty = list(Vec::new());
         assert!(call("pop", &[empty]).is_err());
     }
@@ -3910,15 +4813,24 @@ mod tests {
             call("max", &[list(vec![num(3.0), num(9.0)])]).unwrap(),
             num(9.0)
         );
-        assert_eq!(call("sum", &[list(vec![num(1.0), num(2.0)])]).unwrap(), num(3.0));
+        assert_eq!(
+            call("sum", &[list(vec![num(1.0), num(2.0)])]).unwrap(),
+            num(3.0)
+        );
         assert_eq!(call("abs", &[num(-2.0)]).unwrap(), num(2.0));
-        assert_eq!(call_err("sqrt", &[num(-1.0)]), "sqrt() is not defined for -1");
+        assert_eq!(
+            call_err("sqrt", &[num(-1.0)]),
+            "sqrt() is not defined for -1"
+        );
         assert_eq!(call_err("log", &[num(0.0)]), "log() is not defined for 0");
         assert_eq!(
             call_err("abs", &[text("s")]),
             "abs() requires a number, got string"
         );
-        assert_eq!(call_err("sum", &[list(vec![text("s")])]), "sum() requires a number, got string");
+        assert_eq!(
+            call_err("sum", &[list(vec![text("s")])]),
+            "sum() requires a number, got string"
+        );
         assert_eq!(call_err("min", &[]), "min() requires arguments");
     }
 
@@ -3955,6 +4867,61 @@ mod tests {
         assert_eq!(call_err("len", &[]), "len() requires 1 argument(s), got 0");
     }
 
+    // The optional groups are behind cargo features, so the same program gives a
+    // different answer depending on the build. What must not change is that the
+    // answer names the feature: a lean user who types `gui_window` should be
+    // told how to get it, not told it does not exist.
+    #[test]
+    fn every_optional_name_is_recognised_in_every_build() {
+        // A name that is not a built-in at all stays undefined.
+        assert_eq!(disabled_builtin("not_a_builtin"), None);
+        // Every group is visible from a build that has none of them.
+        for (feature, names) in ALL_GROUPS {
+            let expected = if has_feature(feature) {
+                None
+            } else {
+                Some(*feature)
+            };
+            for name in *names {
+                let verdict = if expected.is_some() {
+                    "resolves to"
+                } else {
+                    "does not resolve to"
+                };
+                assert_eq!(
+                    disabled_builtin(name),
+                    expected,
+                    "{name} should {verdict} the {feature} feature in a build that {} it",
+                    if has_feature(feature) { "has" } else { "lacks" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_builtin_this_build_left_out_names_the_feature() {
+        let enabled = enabled_groups();
+        // Whichever groups this build has, the ones it does not have must be
+        // reported by feature rather than as an undefined function — and the
+        // ones it does have must not be.
+        for (feature, names) in ALL_GROUPS {
+            let name = names[0];
+            let message = undefined_function(name).to_string();
+            if enabled.contains(feature) {
+                assert!(
+                    !message.contains("feature"),
+                    "{name} is in this build, so the error should be a plain one: {message}"
+                );
+            } else {
+                assert!(
+                    message.contains(&format!("`{feature}` feature")),
+                    "{name} is left out of this build, so the error should name the \
+                     {feature} feature, got: {message}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn comparison_orders_strings_and_rejects_mixed_types() {
         assert_eq!(
@@ -3982,7 +4949,10 @@ mod tests {
                 .message,
             "cannot apply '-' to number and string"
         );
-        assert_eq!(apply_unary(UnaryOp::Not, num(0.0)).unwrap(), Value::Boolean(true));
+        assert_eq!(
+            apply_unary(UnaryOp::Not, num(0.0)).unwrap(),
+            Value::Boolean(true)
+        );
     }
 
     #[test]
@@ -4016,7 +4986,9 @@ mod tests {
         assert_eq!(call("int", &[num(-12.2)]).unwrap(), num(-12.0));
         assert_eq!(call("int", &[num(3.0)]).unwrap(), num(3.0));
         assert_eq!(
-            call("int", &[text("x")]).expect_err("type mismatch").message,
+            call("int", &[text("x")])
+                .expect_err("type mismatch")
+                .message,
             "int() requires a number, got string"
         );
     }
@@ -4095,5 +5067,146 @@ mod tests {
                 .contains("low <= high")
         );
         assert!(call("random_int", &[num(1.5), num(6.0)]).is_err());
+    }
+}
+
+/// The convolution inner loop, factored out so it can be compared against a
+/// direct index-based reference.
+///
+/// The two forms are not obviously equivalent — one walks the input and weights
+/// in chunks, the other computes flat offsets by hand — so the equivalence is
+/// tested rather than assumed.
+#[cfg(test)]
+fn conv2d_reference(
+    x: &[f64],
+    w: &[f64],
+    b: &[f64],
+    (n, c_in, h, w_in): (usize, usize, usize, usize),
+    (c_out, _c_in_w, kh, kw): (usize, usize, usize, usize),
+) -> Vec<f64> {
+    let h_out = h - kh + 1;
+    let w_out = w_in - kw + 1;
+    let mut result = vec![0.0; n * c_out * h_out * w_out];
+    for ni in 0..n {
+        // `co` indexes `b` on purpose: this is the literal transcription of the
+        // original loop, kept obviously correct so it can be the reference the
+        // optimised version is compared against.
+        #[allow(clippy::needless_range_loop)]
+        for co in 0..c_out {
+            for hi in 0..h_out {
+                for wi in 0..w_out {
+                    let mut sum = b[co];
+                    for ci in 0..c_in {
+                        for kh_i in 0..kh {
+                            for kw_i in 0..kw {
+                                let x_idx = ((ni * c_in + ci) * h + hi + kh_i) * w_in + wi + kw_i;
+                                let w_idx = ((co * c_in + ci) * kh + kh_i) * kw + kw_i;
+                                sum += x[x_idx] * w[w_idx];
+                            }
+                        }
+                    }
+                    let out_idx = ((ni * c_out + co) * h_out + hi) * w_out + wi;
+                    result[out_idx] = sum;
+                }
+            }
+        }
+    }
+    result
+}
+
+/// The chunk-walking form the implementation uses, kept identical so the test
+/// compares the two rather than restating one of them.
+#[cfg(test)]
+fn conv2d_chunked(
+    x: &[f64],
+    w: &[f64],
+    b: &[f64],
+    (n, c_in, h, w_in): (usize, usize, usize, usize),
+    (c_out, _c_in_w, kh, kw): (usize, usize, usize, usize),
+) -> Vec<f64> {
+    let h_out = h - kh + 1;
+    let w_out = w_in - kw + 1;
+    let mut result = vec![0.0; n * c_out * h_out * w_out];
+    for (ni, x_batch) in x.chunks(c_in * h * w_in).enumerate().take(n) {
+        for (co, w_batch) in w.chunks(c_in * kh * kw).enumerate().take(c_out) {
+            for hi in 0..h_out {
+                for wi in 0..w_out {
+                    let mut sum = b[co];
+                    for (ci, w_channel) in w_batch.chunks(kh * kw).enumerate() {
+                        for (kh_i, w_row) in w_channel.chunks(kw).enumerate() {
+                            let x_row = &x_batch[(ci * h + hi + kh_i) * w_in + wi..];
+                            for (kw_i, weight) in w_row.iter().enumerate() {
+                                sum += x_row[kw_i] * weight;
+                            }
+                        }
+                    }
+                    let out_idx = ((ni * c_out + co) * h_out + hi) * w_out + wi;
+                    result[out_idx] = sum;
+                }
+            }
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod conv2d_tests {
+    use super::{conv2d_chunked, conv2d_reference};
+
+    /// A small deterministic sequence, so a failure is reproducible.
+    fn ramp(len: usize, scale: f64) -> Vec<f64> {
+        (0..len).map(|i| (i as f64 + 1.0) * scale).collect()
+    }
+
+    #[test]
+    fn the_chunked_form_matches_the_indexed_reference() {
+        // Shapes chosen to cover the cases where the chunking could go wrong: a
+        // kernel smaller than the image, a kernel the same size, more than one
+        // input and output channel, and a batch.
+        // (batch, input channels, height, width, output channels, weight
+        // channels, kernel height, kernel width)
+        type Shape = (usize, usize, usize, usize, usize, usize, usize, usize);
+        let cases: [Shape; 6] = [
+            (1, 1, 4, 4, 1, 1, 3, 3),
+            (1, 1, 4, 4, 1, 1, 4, 4),
+            (1, 2, 5, 5, 3, 2, 3, 3),
+            (2, 2, 4, 6, 2, 2, 2, 2),
+            (1, 3, 6, 6, 4, 3, 1, 1),
+            (3, 1, 5, 5, 2, 1, 2, 2),
+        ];
+        for (n, c_in, h, w_in, c_out, c_in_w, kh, kw) in cases {
+            let x = ramp(n * c_in * h * w_in, 1.0);
+            let w = ramp(c_out * c_in_w * kh * kw, 0.5);
+            let b = ramp(c_out, 0.25);
+            let input_shape = (n, c_in, h, w_in);
+            let weight_shape = (c_out, c_in_w, kh, kw);
+            assert_eq!(
+                conv2d_chunked(&x, &w, &b, input_shape, weight_shape),
+                conv2d_reference(&x, &w, &b, input_shape, weight_shape),
+                "mismatch for n={n} c_in={c_in} {h}x{w_in} -> {c_out} kernel {kh}x{kw}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_one_by_one_kernel_scales_each_input() {
+        // With a 1x1 kernel and no bias the output is the input times the weight,
+        // which is checkable by hand.
+        let x = vec![1.0, 2.0, 3.0, 4.0];
+        let w = vec![2.0];
+        let b = vec![0.0];
+        let out = conv2d_chunked(&x, &w, &b, (1, 1, 2, 2), (1, 1, 1, 1));
+        assert_eq!(out, vec![2.0, 4.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn the_bias_is_added_once_per_output_channel() {
+        let x = vec![1.0, 1.0, 1.0, 1.0];
+        let w = vec![1.0, 1.0];
+        let b = vec![10.0];
+        // One output channel, 1x1 kernel, two input channels: each output is the
+        // sum of the two input values plus the bias.
+        let out = conv2d_chunked(&x, &w, &b, (1, 2, 1, 2), (1, 2, 1, 1));
+        assert_eq!(out, vec![12.0, 12.0]);
     }
 }

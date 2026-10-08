@@ -9,6 +9,7 @@ pub enum TokenKind {
     Let,
     Func,
     Async,
+    Extern,
     Await,
     Spawn,
     If,
@@ -84,8 +85,62 @@ pub struct LexError {
 
 impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "lex error at line {}, col {}: {}", self.line, self.col, self.message)
+        write!(
+            f,
+            "lex error at line {}, col {}: {}",
+            self.line, self.col, self.message
+        )
     }
+}
+
+/// Whether `name` is an identifier the lexer would produce, as opposed to a
+/// reserved word.
+///
+/// This is the single definition of "what a name may be": the scanner uses the
+/// same rule, so a tool that validates a name (rename, for instance) cannot
+/// accept something the language would then refuse to parse. Identifiers are
+/// ASCII-only, which is a deliberate choice — it keeps the scanner byte-wise and
+/// means a name is always the same length as its source text.
+pub fn is_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return false;
+    }
+    if !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return false;
+    }
+    !is_reserved_word(name)
+}
+
+/// The reserved words, which the scanner turns into their own tokens and which
+/// therefore cannot be used as names.
+pub fn is_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "let"
+            | "fn"
+            | "async"
+            | "extern"
+            | "await"
+            | "spawn"
+            | "if"
+            | "else"
+            | "while"
+            | "for"
+            | "in"
+            | "return"
+            | "break"
+            | "continue"
+            | "true"
+            | "false"
+            | "null"
+            | "and"
+            | "or"
+            | "not"
+    )
 }
 
 impl std::error::Error for LexError {}
@@ -146,7 +201,7 @@ impl<'a> Lexer<'a> {
                 Some(b' ') | Some(b'\t') | Some(b'\r') => {
                     self.advance_simple();
                 }
-                Some(b'/' ) if self.peek_at(1) == Some(b'/') => {
+                Some(b'/') if self.peek_at(1) == Some(b'/') => {
                     while self.pos < self.source.len() && self.source[self.pos] != b'\n' {
                         self.advance_simple();
                     }
@@ -441,7 +496,9 @@ impl<'a> Lexer<'a> {
         // large constants had to be spelled out.
         if self.pos < self.source.len() && (self.source[self.pos] | 0x20) == b'e' {
             let mut lookahead = self.pos + 1;
-            if self.peek_at(lookahead - self.pos) == Some(b'+') || self.peek_at(lookahead - self.pos) == Some(b'-') {
+            if self.peek_at(lookahead - self.pos) == Some(b'+')
+                || self.peek_at(lookahead - self.pos) == Some(b'-')
+            {
                 lookahead += 1;
             }
             if self
@@ -466,13 +523,11 @@ impl<'a> Lexer<'a> {
         let text = std::str::from_utf8(&self.source[start..self.pos])
             .expect("numbers are ASCII")
             .replace('_', "");
-        let value: f64 = text
-            .parse()
-            .map_err(|_| LexError {
-                message: format!("'{}' is not a valid number", text),
-                line: self.line,
-                col: self.col,
-            })?;
+        let value: f64 = text.parse().map_err(|_| LexError {
+            message: format!("'{}' is not a valid number", text),
+            line: self.line,
+            col: self.col,
+        })?;
         let _ = is_float;
         Ok(TokenKind::Number(value))
     }
@@ -489,6 +544,7 @@ impl<'a> Lexer<'a> {
             "let" => Ok(TokenKind::Let),
             "fn" => Ok(TokenKind::Func),
             "async" => Ok(TokenKind::Async),
+            "extern" => Ok(TokenKind::Extern),
             "await" => Ok(TokenKind::Await),
             "spawn" => Ok(TokenKind::Spawn),
             "if" => Ok(TokenKind::If),
@@ -577,7 +633,8 @@ impl<'a> Lexer<'a> {
                             b'}' => depth -= 1,
                             b'\n' => {
                                 return Err(LexError {
-                                    message: "an interpolated expression cannot span lines".to_string(),
+                                    message: "an interpolated expression cannot span lines"
+                                        .to_string(),
                                     line: self.line,
                                     col: self.col,
                                 });
@@ -596,9 +653,10 @@ impl<'a> Lexer<'a> {
                     // The closing brace was consumed; the expression is what
                     // sits between the braces.
                     let expression_end = self.pos - 1;
-                    let expression = std::str::from_utf8(&self.source[expression_start..expression_end])
-                        .expect("the source is UTF-8")
-                        .to_string();
+                    let expression =
+                        std::str::from_utf8(&self.source[expression_start..expression_end])
+                            .expect("the source is UTF-8")
+                            .to_string();
                     // Marker layout inside the literal:
                     //   MARK HEAD MARK expression MARK
                     // where HEAD is plain ASCII that cannot collide with user
@@ -637,7 +695,12 @@ mod tests {
     use super::*;
 
     fn lex(source: &str) -> Vec<TokenKind> {
-        Lexer::new(source).tokenize().unwrap().into_iter().map(|t| t.kind).collect()
+        Lexer::new(source)
+            .tokenize()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
     }
 
     #[test]

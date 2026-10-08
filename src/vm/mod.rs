@@ -14,15 +14,23 @@
 //!         `JumpIfNot`) with a numeric fast path that skips type dispatch
 use crate::ast::*;
 use crate::builtins::{
-    apply_binary, apply_unary, get_index, is_truthy, numeric_binary, set_index, Map, RuntimeError,
+    Map, RuntimeError, apply_binary, apply_unary, get_index, is_truthy, numeric_binary, set_index,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Built-in functions. The VM registers these and the compiler resolves calls
 /// to them at compile time.
-pub use crate::builtins::NAMES as NATIVE_NAMES;
+pub use crate::builtins::names as native_names;
+
+/// One `extern` block: the library to load, and the functions declared in it as
+/// `(name, parameter types, return type)`.
+///
+/// Written out once because it appears in three places — the AST, the compiled
+/// program, and the FFI registration — and a divergence between them would mean
+/// a call resolving against a declaration it was not checked against.
+pub type ExternBlock = (String, Vec<(String, Vec<ExternType>, ExternType)>);
 
 /// Interned identifier: an index into [`Interner`]'s name table.
 pub type Symbol = u32;
@@ -44,7 +52,7 @@ impl Interner {
     /// native table by `Symbol` without mutating the interner while running.
     fn with_natives() -> Self {
         let mut interner = Self::new();
-        for name in NATIVE_NAMES {
+        for name in native_names() {
             interner.intern(name);
         }
         interner
@@ -294,6 +302,10 @@ pub struct Program {
     /// nothing to mirror.
     pub module_entry: Option<ModuleEntry>,
     pub interner: Rc<Interner>,
+    /// `extern` blocks declared at module level. The VM turns each entry into a
+    /// native before executing anything, so a program that declares a library it
+    /// cannot load fails at startup rather than at the call site.
+    pub externs: Vec<ExternBlock>,
 }
 
 impl Program {
@@ -335,10 +347,9 @@ impl Program {
                 crate::interpreter::format_value(&constants[*index as usize])
             ),
             Op::LoadLocal(slot) => format!("load.local   slot{slot}"),
-            Op::LoadLocalChecked { slot, name } => format!(
-                "load.local?  slot{slot}   ; {}",
-                self.interner.name(*name)
-            ),
+            Op::LoadLocalChecked { slot, name } => {
+                format!("load.local?  slot{slot}   ; {}", self.interner.name(*name))
+            }
             Op::StoreLocal(slot) => format!("store.local  slot{slot}"),
             Op::LoadGlobal(symbol) => format!(
                 "load.global  #{}   ; {}",
@@ -361,12 +372,7 @@ impl Program {
                 format_operator(*op),
                 self.format_fusee(rhs, constants)
             ),
-            Op::BinaryStore {
-                op,
-                dst,
-                lhs,
-                rhs,
-            } => format!(
+            Op::BinaryStore { op, dst, lhs, rhs } => format!(
                 "store        {} = {} {} {}",
                 self.format_fusee(dst, constants),
                 self.format_fusee(lhs, constants),
@@ -411,7 +417,11 @@ impl Program {
     fn format_fusee(&self, operand: &Fusee, constants: &[Value]) -> String {
         match operand.tag() {
             TAG_LOCAL => format!("slot{}", operand.index()),
-            TAG_GLOBAL => format!("#{}({})", operand.index(), self.interner.name(operand.index())),
+            TAG_GLOBAL => format!(
+                "#{}({})",
+                operand.index(),
+                self.interner.name(operand.index())
+            ),
             TAG_GLOBAL_CHECKED => format!(
                 "#?{}({})",
                 operand.index(),
@@ -517,6 +527,14 @@ pub struct Compiler {
     /// Enclosing loops, innermost last. `break` and `continue` compile into
     /// jumps to the patch lists of the innermost entry.
     loops: Vec<LoopContext>,
+    /// Every `extern` block the module declared, in source order. The VM
+    /// resolves these into its natives table before the first instruction
+    /// runs, so calling an extern is an ordinary native call.
+    externs: Vec<ExternBlock>,
+    /// The function names every `extern` block declares. Collected in its own
+    /// pass so a call is resolved whether it appears before or after the
+    /// declaration that introduces it.
+    extern_names: HashSet<String>,
 }
 
 /// Where the `break` and `continue` inside one loop must jump.
@@ -547,6 +565,9 @@ enum Mirror {
 impl Compiler {
     pub fn compile(stmts: &[Stmt]) -> Result<Program, RuntimeError> {
         let mut compiler = Compiler::new();
+        // Pass 0: extern names, so a call resolves regardless of whether the
+        // declaration sits above or below it.
+        compiler.hoist_externs(stmts);
         // Pass 1: reserve an index per function so calls can be resolved
         // regardless of definition order (including recursion).
         compiler.hoist_functions(stmts);
@@ -567,6 +588,7 @@ impl Compiler {
             module_slots: compiler.next_slot,
             module_entry,
             interner: Rc::new(compiler.interner),
+            externs: std::mem::take(&mut compiler.externs),
         })
     }
 
@@ -586,6 +608,8 @@ impl Compiler {
             module_statements: Vec::new(),
             record_statements: false,
             loops: Vec::new(),
+            externs: Vec::new(),
+            extern_names: HashSet::new(),
         }
     }
 
@@ -700,6 +724,44 @@ impl Compiler {
             | Op::JumpIfTrue(t)
             | Op::JumpIfNot { target: t, .. } => *t = target,
             _ => unreachable!("only jumps can be patched"),
+        }
+    }
+
+    /// Records every function name an `extern` block declares.
+    ///
+    /// `extern` is a module-level declaration, but a program is free to call the
+    /// function before the block that introduces it, so the names are collected
+    /// before any code is emitted rather than as the block is reached.
+    fn hoist_externs(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Extern { functions, .. } => {
+                    for (name, _, _) in functions {
+                        // Interned even when nothing calls it: the natives
+                        // table is sized from the interner, so a declared
+                        // function that is never used still needs its slot or
+                        // registration would fail on a program that is
+                        // otherwise fine.
+                        self.extern_names.insert(name.clone());
+                        self.interner.intern(name);
+                    }
+                }
+                Stmt::Block(body) => self.hoist_externs(body),
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    self.hoist_externs(then_branch);
+                    self.hoist_externs(else_branch);
+                }
+                Stmt::While { body, .. } => self.hoist_externs(body),
+                Stmt::For { body, .. } => self.hoist_externs(body),
+                Stmt::Function { body, .. } | Stmt::AsyncFunction { body, .. } => {
+                    self.hoist_externs(body)
+                }
+                _ => {}
+            }
         }
     }
 
@@ -861,8 +923,7 @@ impl Compiler {
                 // `dst = lhs op rhs` as a whole statement becomes one opcode.
                 if let Expr::Assign { name, value } = expr
                     && let Expr::Binary { left, op, right } = without_grouping(value)
-                    && let (Some(lhs), Some(rhs)) =
-                        (self.fusee_of(left), self.fusee_of(right))
+                    && let (Some(lhs), Some(rhs)) = (self.fusee_of(left), self.fusee_of(right))
                 {
                     let dst = self.store_target(name);
                     self.emit(Op::BinaryStore {
@@ -890,8 +951,7 @@ impl Compiler {
                     self.next_slot += 1;
                     // A declaration inside an `if`/`while` body may never run,
                     // so reads of it need a runtime written-check.
-                    let conditional =
-                        self.conditional_depth > 0 && slot < MAX_TRACKED_SLOTS;
+                    let conditional = self.conditional_depth > 0 && slot < MAX_TRACKED_SLOTS;
                     self.scopes
                         .last_mut()
                         .unwrap()
@@ -992,10 +1052,13 @@ impl Compiler {
                 self.next_slot += 1;
                 let x_slot = self.next_slot;
                 self.next_slot += 1;
-                self.scopes
-                    .last_mut()
-                    .unwrap()
-                    .insert(symbol, Local { slot: x_slot, conditional: false });
+                self.scopes.last_mut().unwrap().insert(
+                    symbol,
+                    Local {
+                        slot: x_slot,
+                        conditional: false,
+                    },
+                );
                 // items = iterable (arrays iterate elements; maps iterate keys)
                 self.compile_expr(iterable)?;
                 self.emit(Op::IterList);
@@ -1057,6 +1120,15 @@ impl Compiler {
                     None => self.emit_load_const(&Value::Null),
                 }
                 self.emit(Op::Return);
+            }
+            Stmt::Extern {
+                library, functions, ..
+            } => {
+                // The declaration itself compiles to nothing: `VM::new` resolves
+                // the symbols into the natives table before the first
+                // instruction runs, so an extern call is an ordinary native
+                // call. Recording the block here is what carries it there.
+                self.externs.push((library.clone(), functions.clone()));
             }
         }
         Ok(())
@@ -1258,12 +1330,17 @@ impl Compiler {
                     ));
                 };
                 let symbol = self.interner.intern(name);
-                let target = if NATIVE_NAMES.contains(&name.as_str()) {
+                let target = if native_names().contains(&name.as_str()) {
+                    CallTarget::Native(symbol)
+                } else if self.extern_names.contains(name.as_str()) {
+                    // A declared extern resolves to a native just like a
+                    // builtin; `VM::new` fills that slot in from the library
+                    // before the first instruction runs.
                     CallTarget::Native(symbol)
                 } else if let Some(index) = self.function_index.get(name) {
                     CallTarget::Function(*index)
                 } else {
-                    return Err(RuntimeError::new(&format!("undefined function '{}'", name)));
+                    return Err(crate::builtins::undefined_function(name));
                 };
                 self.emit(Op::Call(target, args.len() as u32));
             }
@@ -1283,7 +1360,49 @@ impl Compiler {
     }
 }
 
-type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, RuntimeError>>;
+pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, RuntimeError>>;
+
+/// Runtime statistics collected during VM execution.
+#[derive(Debug, Default, Clone)]
+pub struct RuntimeStats {
+    /// Total instructions executed.
+    pub instructions_executed: usize,
+    /// Total function calls (native + user).
+    pub calls: usize,
+    /// Number of native (builtin) calls.
+    pub native_calls: usize,
+    /// Number of user function calls.
+    pub function_calls: usize,
+    /// Peak stack depth reached.
+    pub peak_stack_depth: usize,
+    /// Peak frame count reached.
+    pub peak_frame_count: usize,
+    /// Number of times the stack was grown.
+    pub stack_growths: usize,
+    /// Number of constant clones (for tracking allocation overhead).
+    pub constant_clones: usize,
+}
+
+impl RuntimeStats {
+    pub fn format(&self) -> String {
+        let mut out = String::new();
+        out.push_str("Runtime Statistics\n");
+        out.push_str(&format!(
+            "  instructions executed: {}\n",
+            self.instructions_executed
+        ));
+        out.push_str(&format!("  total calls: {}\n", self.calls));
+        out.push_str(&format!("    native calls: {}\n", self.native_calls));
+        out.push_str(&format!("    function calls: {}\n", self.function_calls));
+        out.push_str(&format!("  peak stack depth: {}\n", self.peak_stack_depth));
+        out.push_str(&format!("  peak frame count: {}\n", self.peak_frame_count));
+        out.push_str(&format!("  stack growths: {}\n", self.stack_growths));
+        if self.constant_clones > 0 {
+            out.push_str(&format!("  constant clones: {}\n", self.constant_clones));
+        }
+        out
+    }
+}
 
 /// A builtin call. The implementation lives in [`crate::builtins`], which the
 /// reference interpreter calls too, so the two engines cannot drift apart.
@@ -1327,10 +1446,13 @@ pub struct VM {
     /// Global symbol of each slot of the native module prefix, in slot order.
     /// Empty when there is no native module entry.
     module_globals: Vec<Symbol>,
+    /// Runtime statistics (instruction count, call counts, peak stack depth, etc.)
+    stats: RuntimeStats,
 }
 
 struct Frame {
     ip: usize,
+    function_index: usize,
     instructions: Rc<Vec<Op>>,
     constants: Rc<Vec<Value>>,
     base: usize,
@@ -1355,13 +1477,23 @@ impl VM {
             module_slots,
             module_entry,
             interner,
+            externs,
         } = program;
 
         let mut natives: Vec<Option<NativeFn>> = (0..interner.len()).map(|_| None).collect();
-        for name in NATIVE_NAMES {
+        for name in native_names() {
             if let Some(symbol) = interner.resolve(name) {
                 natives[symbol as usize] = Some(native_fn(name));
             }
+        }
+        if !externs.is_empty() {
+            // A missing library or symbol is a startup failure, not a
+            // call-site one: the program declared it, so it cannot run.
+            #[cfg(feature = "ffi")]
+            crate::ffi::register_externs_in_vm(&externs, &mut natives, &interner)
+                .unwrap_or_else(|e| panic!("ffi initialization error: {e}"));
+            #[cfg(not(feature = "ffi"))]
+            panic!("{}", crate::builtins::ffi_unavailable());
         }
         let globals: Vec<Option<Value>> = (0..interner.len()).map(|_| None).collect();
 
@@ -1381,6 +1513,7 @@ impl VM {
             jit,
             jit_disabled: false,
             module_globals: module_entry.map(|entry| entry.globals).unwrap_or_default(),
+            stats: RuntimeStats::default(),
         }
     }
 
@@ -1524,13 +1657,17 @@ impl VM {
                 }
                 Op::Halt => return Ok(()),
                 Op::MakeArray(count) => {
-                    debug_assert!(self.has_operands(count as usize), "operand underflow in MakeArray");
+                    debug_assert!(
+                        self.has_operands(count as usize),
+                        "operand underflow in MakeArray"
+                    );
                     let mut elements: Vec<Value> = Vec::with_capacity(count as usize);
                     for _ in 0..count {
                         elements.push(self.pop_operand());
                     }
                     elements.reverse();
-                    self.stack.push(Value::Array(Rc::new(RefCell::new(elements))));
+                    self.stack
+                        .push(Value::Array(Rc::new(RefCell::new(elements))));
                 }
                 Op::IterList => {
                     debug_assert!(self.has_operands(1), "operand underflow in IterList");
@@ -1538,16 +1675,15 @@ impl VM {
                     let items = match iterable {
                         Value::Array(elements) => elements.borrow().clone(),
                         Value::Map(map) => map.borrow().keys(),
-                        _ => {
-                            return Err(RuntimeError::new(
-                                "for loop requires an array or map",
-                            ))
-                        }
+                        _ => return Err(RuntimeError::new("for loop requires an array or map")),
                     };
                     self.stack.push(Value::Array(Rc::new(RefCell::new(items))));
                 }
                 Op::MakeMap(count) => {
-                    debug_assert!(self.has_operands(count as usize * 2), "operand underflow in MakeMap");
+                    debug_assert!(
+                        self.has_operands(count as usize * 2),
+                        "operand underflow in MakeMap"
+                    );
                     let mut map = Map::new();
                     // Pairs went in value-then-key, forward order; pop them
                     // back-to-front and insert forward to keep insertion order.
@@ -1610,10 +1746,9 @@ impl VM {
                 let native = match native {
                     Some(f) => f,
                     None => {
-                        return Err(RuntimeError::new(&format!(
-                            "undefined function '{}'",
-                            self.interner.name(symbol)
-                        )));
+                        return Err(crate::builtins::undefined_function(
+                            self.interner.name(symbol),
+                        ));
                     }
                 };
                 let result = native(&self.stack[arg_start..])?;
@@ -1674,6 +1809,7 @@ impl VM {
 
                 self.frames.push(Frame {
                     ip: self.ip,
+                    function_index: index as usize,
                     instructions: std::mem::replace(&mut self.instructions, instructions),
                     constants: std::mem::replace(&mut self.constants, constants),
                     base: std::mem::replace(&mut self.base, arg_start),
@@ -1828,6 +1964,21 @@ impl VM {
         let l = self.read_operand(lhs)?;
         let r = self.read_operand(rhs)?;
         apply_binary(l, op, r)
+    }
+
+    /// Returns runtime statistics collected during execution.
+    pub fn stats(&self) -> &RuntimeStats {
+        &self.stats
+    }
+
+    /// Returns a stack trace of the current call frames.
+    pub fn stack_trace(&self) -> Vec<String> {
+        let mut trace = Vec::new();
+        for frame in self.frames.iter().rev() {
+            let name = self.interner.name(frame.function_index as u32);
+            trace.push(name.to_string());
+        }
+        trace
     }
 }
 

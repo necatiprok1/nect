@@ -1,0 +1,51 @@
+/*
+ * ffi_example.nct - Demonstrates Nect's FFI (Foreign Function Interface).
+ *
+ * This example calls C functions from a shared library to compute
+ * mathematical operations and string processing.
+ *
+ * To run:
+ *   cc -shared -fPIC -o libexample.so ffi_example.c   # on macOS: libexample.dylib
+ *   nect run ffi_example.nct
+ *
+ * Or use the test library:
+ *   nect run examples/ffi_example.nct
+ */
+
+// Declare C functions from the math library (libm).
+// On macOS, use "m" (resolves to libm.dylib).
+// On Linux, "m" resolves to libm.so.
+// For portability in this example, we use "c" (libc on macOS)
+// or a full path.
+extern "m" {
+    fn sin(number) -> number;
+    fn cos(number) -> number;
+    fn pow(number, number) -> number;
+}
+
+// Compute sin(0) + cos(0) = 0 + 1 = 1
+print(sin(0.0))
+print(cos(0.0))
+
+// Compute 2^8 = 256
+print(pow(2.0, 8.0))
+
+// Use the result
+let angle = 0.0
+let value = sin(angle) + cos(angle)
+print(value)
+
+// Compute using FFI inside a function
+fn compute_power(base, exp) {
+    return pow(base, exp)
+}
+print(compute_power(3.0, 4.0))  // 3^4 = 81
+
+// Use FFI in a loop
+let sum = 0.0
+let i = 0.0
+while i < 10.0 {
+    sum = sum + pow(i, 2.0)
+    i = i + 1.0
+}
+print(sum)  // 0+1+4+9+16+25+36+49+64+81 = 285

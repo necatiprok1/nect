@@ -44,7 +44,9 @@
 //! `tests/aot_tests.rs` runs a corpus through both and compares byte for byte.
 
 use crate::ast::{BinaryOp, UnaryOp, Value};
-use crate::vm::{CallTarget, Fusee, Op, Program, TAG_CONST, TAG_GLOBAL, TAG_GLOBAL_CHECKED, TAG_LOCAL};
+use crate::vm::{
+    CallTarget, Fusee, Op, Program, TAG_CONST, TAG_GLOBAL, TAG_GLOBAL_CHECKED, TAG_LOCAL,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -147,14 +149,24 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     }
 
     for (index, param_count, _) in &functions {
-        let params: Vec<String> = (0..*param_count).map(|slot| format!("double p{}", slot)).collect();
+        let params: Vec<String> = (0..*param_count)
+            .map(|slot| format!("double p{}", slot))
+            .collect();
         let _ = writeln!(out, "static double fn{}({});", index, params.join(", "));
     }
     if !functions.is_empty() {
         out.push('\n');
         for (index, param_count, body) in &functions {
-            let params: Vec<String> = (0..*param_count).map(|slot| format!("double p{}", slot)).collect();
-            let _ = writeln!(out, "static double fn{}({}) {{\n{}}}", index, params.join(", "), body);
+            let params: Vec<String> = (0..*param_count)
+                .map(|slot| format!("double p{}", slot))
+                .collect();
+            let _ = writeln!(
+                out,
+                "static double fn{}({}) {{\n{}}}",
+                index,
+                params.join(", "),
+                body
+            );
             out.push('\n');
         }
     }
@@ -221,7 +233,11 @@ fn stack_effect(op: &Op) -> (usize, usize) {
 
 /// Where an instruction continues to.
 fn successors(op: &Op, index: usize, len: usize) -> Vec<usize> {
-    let next = if index + 1 < len { vec![index + 1] } else { Vec::new() };
+    let next = if index + 1 < len {
+        vec![index + 1]
+    } else {
+        Vec::new()
+    };
     match op {
         Op::Jump(target) => vec![*target as usize],
         Op::JumpIfFalse(target) | Op::JumpIfTrue(target) | Op::JumpIfNot { target, .. } => {
@@ -268,7 +284,7 @@ fn entry_depths(instructions: &[Op], label: &str) -> Result<Vec<Option<usize>>, 
                 Some(existing) if existing != next => {
                     return Err(format!(
                         "{label} joins two paths that disagree about the operand stack (at {successor}: {existing} vs {next})"
-                    ))
+                    ));
                 }
                 Some(_) => {}
             }
@@ -336,12 +352,7 @@ struct Body<'a> {
 }
 
 impl<'a> Body<'a> {
-    fn new(
-        program: &'a Program,
-        label: &str,
-        mode: Mode,
-        globals: HashMap<u32, Ty>,
-    ) -> Self {
+    fn new(program: &'a Program, label: &str, mode: Mode, globals: HashMap<u32, Ty>) -> Self {
         Self {
             program,
             globals,
@@ -434,8 +445,12 @@ impl<'a> Body<'a> {
                 if position == 0 {
                     return true;
                 }
-                successors(&instructions[position - 1], position - 1, instructions.len())
-                    .contains(&position)
+                successors(
+                    &instructions[position - 1],
+                    position - 1,
+                    instructions.len(),
+                )
+                .contains(&position)
             })
             .collect();
 
@@ -533,9 +548,7 @@ impl<'a> Body<'a> {
                 Op::LoadLocal(slot) | Op::StoreLocal(slot) | Op::LoadLocalChecked { slot, .. } => {
                     note(*slot, &mut count)
                 }
-                Op::StoreKeep(fusee) if fusee.tag() == TAG_LOCAL => {
-                    note(fusee.index(), &mut count)
-                }
+                Op::StoreKeep(fusee) if fusee.tag() == TAG_LOCAL => note(fusee.index(), &mut count),
                 Op::BinaryStore { dst, .. } if dst.tag() == TAG_LOCAL => {
                     note(dst.index(), &mut count)
                 }
@@ -586,7 +599,7 @@ impl<'a> Body<'a> {
                     Some(ty) => Ok(Slot::new(ty, format!("g{}", symbol), true)),
                     None => {
                         let name = self.program.interner.name(symbol).to_string();
-                        let message = if crate::builtins::NAMES.contains(&name.as_str()) {
+                        let message = if crate::builtins::names().contains(&name.as_str()) {
                             format!("cannot use '{}' as a value (it is a function)", name)
                         } else {
                             format!("undefined variable '{}'", name)
@@ -608,9 +621,9 @@ impl<'a> Body<'a> {
                 }
                 _ => Err(self.reason("reads a constant the C backend cannot represent")),
             },
-            TAG_GLOBAL_CHECKED => Err(self.reason(
-                "assigns to a name the compiler could not prove is declared",
-            )),
+            TAG_GLOBAL_CHECKED => {
+                Err(self.reason("assigns to a name the compiler could not prove is declared"))
+            }
             _ => Err(self.reason("assigns to a constant")),
         }
     }
@@ -669,9 +682,9 @@ impl<'a> Body<'a> {
                         self.globals.insert(symbol, value.ty);
                     }
                     None => {
-                        return Err(self.reason(
-                            "assigns a name the compiler could not prove is declared",
-                        ));
+                        return Err(
+                            self.reason("assigns a name the compiler could not prove is declared")
+                        );
                     }
                 }
                 self.line(&format!("g{} = {};", symbol, value.expr));
@@ -716,7 +729,7 @@ impl<'a> Body<'a> {
                     _ => {
                         return Err(self.reason(
                             "uses a value the C backend cannot represent (arrays or functions)",
-                        ))
+                        ));
                     }
                 }
             }
@@ -742,7 +755,10 @@ impl<'a> Body<'a> {
                 self.line(&format!(
                     "if (!w{}) {{ nx_fail({}); }}",
                     slot,
-                    c_string(&format!("undefined variable '{}'", self.program.interner.name(*name)))
+                    c_string(&format!(
+                        "undefined variable '{}'",
+                        self.program.interner.name(*name)
+                    ))
                 ));
                 self.push(ty, self.slot_expr(*slot), true);
             }
@@ -761,7 +777,7 @@ impl<'a> Body<'a> {
             Op::LoadGlobal(symbol) => match self.globals.get(symbol).copied() {
                 Some(ty) => {
                     let name = self.program.interner.name(*symbol).to_string();
-                    let message = if crate::builtins::NAMES.contains(&name.as_str()) {
+                    let message = if crate::builtins::names().contains(&name.as_str()) {
                         format!("cannot use '{}' as a value (it is a function)", name)
                     } else {
                         format!("undefined variable '{}'", name)
@@ -777,7 +793,7 @@ impl<'a> Body<'a> {
                 // in the VM, so it is one here too (with the same wording).
                 None => {
                     let name = self.program.interner.name(*symbol).to_string();
-                    let message = if crate::builtins::NAMES.contains(&name.as_str()) {
+                    let message = if crate::builtins::names().contains(&name.as_str()) {
                         format!("cannot use '{}' as a value (it is a function)", name)
                     } else {
                         format!("undefined variable '{}'", name)
@@ -798,12 +814,21 @@ impl<'a> Body<'a> {
                 let left = self.pop("an operator")?;
                 self.binary(*operator, left, right)?;
             }
-            Op::BinaryFast { op: operator, lhs, rhs } => {
+            Op::BinaryFast {
+                op: operator,
+                lhs,
+                rhs,
+            } => {
                 let left = self.operand(*lhs, constants)?;
                 let right = self.operand(*rhs, constants)?;
                 self.binary(*operator, left, right)?;
             }
-            Op::BinaryStore { op: operator, dst, lhs, rhs } => {
+            Op::BinaryStore {
+                op: operator,
+                dst,
+                lhs,
+                rhs,
+            } => {
                 let left = self.operand(*lhs, constants)?;
                 let right = self.operand(*rhs, constants)?;
                 let before = self.stack.len();
@@ -816,7 +841,12 @@ impl<'a> Body<'a> {
                 let value = self.pop("a unary operator")?;
                 self.unary(*operator, value)?;
             }
-            Op::JumpIfNot { op: operator, lhs, rhs, target } => {
+            Op::JumpIfNot {
+                op: operator,
+                lhs,
+                rhs,
+                target,
+            } => {
                 let left = self.operand(*lhs, constants)?;
                 let right = self.operand(*rhs, constants)?;
                 let condition = self.condition(*operator, left, right)?;
@@ -850,7 +880,11 @@ impl<'a> Body<'a> {
                 }
                 let value = self.pop("a return")?;
                 match value.ty {
-                    Ty::Str => return Err(self.reason("returns a string, which the C backend cannot represent")),
+                    Ty::Str => {
+                        return Err(
+                            self.reason("returns a string, which the C backend cannot represent")
+                        );
+                    }
                     _ => self.line(&format!("return {};", value.expr)),
                 }
             }
@@ -869,7 +903,7 @@ impl<'a> Body<'a> {
                 return Err(self.reason(&format!(
                     "uses {} which the C backend cannot translate",
                     describe_instruction(other)
-                )))
+                )));
             }
         }
         Ok(())
@@ -897,9 +931,9 @@ impl<'a> Body<'a> {
                 self.push(Ty::Str, name, true);
             }
             BinaryOp::Add if left.ty == Ty::Str || right.ty == Ty::Str => {
-                return Err(self.reason(
-                    "applies '+' to a string and something that is not a string",
-                ));
+                return Err(
+                    self.reason("applies '+' to a string and something that is not a string")
+                );
             }
             BinaryOp::Add
             | BinaryOp::Subtract
@@ -945,10 +979,7 @@ impl<'a> Body<'a> {
                     ),
                 }
             }
-            BinaryOp::Less
-            | BinaryOp::Greater
-            | BinaryOp::LessEqual
-            | BinaryOp::GreaterEqual => {
+            BinaryOp::Less | BinaryOp::Greater | BinaryOp::LessEqual | BinaryOp::GreaterEqual => {
                 let condition = self.ordering(op, left, right)?;
                 self.push(Ty::Bool, format!("(({}) ? 1.0 : 0.0)", condition), false);
             }
@@ -968,15 +999,17 @@ impl<'a> Body<'a> {
                     let symbol = if op == BinaryOp::Equal { "==" } else { "!=" };
                     self.push(
                         Ty::Bool,
-                        format!("((({}) {} ({})) ? 1.0 : 0.0)", left.expr, symbol, right.expr),
+                        format!(
+                            "((({}) {} ({})) ? 1.0 : 0.0)",
+                            left.expr, symbol, right.expr
+                        ),
                         left.simple && right.simple,
                     );
                 }
             }
             BinaryOp::And | BinaryOp::Or => {
-                return Err(self.reason(
-                    "uses && or ||, whose merge point the C backend does not translate",
-                ))
+                return Err(self
+                    .reason("uses && or ||, whose merge point the C backend does not translate"));
             }
         }
         Ok(())
@@ -1004,7 +1037,12 @@ impl<'a> Body<'a> {
         match op {
             BinaryOp::Equal | BinaryOp::NotEqual if left.ty != right.ty => {
                 // Different kinds of value are never equal in the VM.
-                Ok(if op == BinaryOp::Equal { "1 == 0" } else { "1 == 1" }.to_string())
+                Ok(if op == BinaryOp::Equal {
+                    "1 == 0"
+                } else {
+                    "1 == 1"
+                }
+                .to_string())
             }
             BinaryOp::Equal | BinaryOp::NotEqual if left.ty == Ty::Str => Err(self.reason(
                 "compares strings in a fused branch, which the C backend does not translate",
@@ -1028,14 +1066,11 @@ impl<'a> Body<'a> {
         };
         match (left.ty, right.ty) {
             (Ty::Num, Ty::Num) => Ok(format!("({}) {} ({})", left.expr, symbol, right.expr)),
-            (Ty::Str, Ty::Str) => Err(self.reason(
-                "compares strings by ordering, which the C backend does not translate",
-            )),
-            (a, b) => Err(self.reason(&format!(
-                "compares {} with {}",
-                a.describe(),
-                b.describe()
-            ))),
+            (Ty::Str, Ty::Str) => {
+                Err(self
+                    .reason("compares strings by ordering, which the C backend does not translate"))
+            }
+            (a, b) => Err(self.reason(&format!("compares {} with {}", a.describe(), b.describe()))),
         }
     }
 
@@ -1083,11 +1118,17 @@ impl<'a> Body<'a> {
                         )));
                     }
                 }
-                let rendered: Vec<String> = arguments.iter().map(|slot| slot.expr.clone()).collect();
+                let rendered: Vec<String> =
+                    arguments.iter().map(|slot| slot.expr.clone()).collect();
                 let name = self.temp();
                 // Materialised immediately, so calls keep the bytecode's
                 // evaluation order.
-                self.line(&format!("double {} = fn{}({});", name, index, rendered.join(", ")));
+                self.line(&format!(
+                    "double {} = fn{}({});",
+                    name,
+                    index,
+                    rendered.join(", ")
+                ));
                 self.push(Ty::Num, name, true);
             }
             CallTarget::Native(symbol) => {
@@ -1117,26 +1158,24 @@ impl<'a> Body<'a> {
                 self.line("nx_newline();");
                 self.push(Ty::Num, "0.0", true);
             }
-            "str" => {
-                match arguments.first() {
-                    Some(argument) if argument.ty == Ty::Str => {
-                        let value = argument.expr.clone();
-                        self.push(Ty::Str, value, argument.simple);
-                    }
-                    Some(argument) if argument.ty == Ty::Bool => {
-                        let value = format!("nx_bool_text({})", argument.expr);
-                        self.push(Ty::Str, value, false);
-                    }
-                    Some(argument) => {
-                        let value = format!("nx_from_double({})", argument.expr);
-                        self.push(Ty::Str, value, false);
-                    }
-                    None => {
-                        let value = self.string_literal("");
-                        self.push(Ty::Str, value, true);
-                    }
+            "str" => match arguments.first() {
+                Some(argument) if argument.ty == Ty::Str => {
+                    let value = argument.expr.clone();
+                    self.push(Ty::Str, value, argument.simple);
                 }
-            }
+                Some(argument) if argument.ty == Ty::Bool => {
+                    let value = format!("nx_bool_text({})", argument.expr);
+                    self.push(Ty::Str, value, false);
+                }
+                Some(argument) => {
+                    let value = format!("nx_from_double({})", argument.expr);
+                    self.push(Ty::Str, value, false);
+                }
+                None => {
+                    let value = self.string_literal("");
+                    self.push(Ty::Str, value, true);
+                }
+            },
             "abs" | "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "log" => {
                 let argument = self.numeric_argument(name, &arguments)?;
                 self.push(Ty::Num, format!("nx_{}({})", name, argument), false);
@@ -1165,7 +1204,7 @@ impl<'a> Body<'a> {
                 return Err(self.reason(&format!(
                     "calls {}(), which the C backend does not translate",
                     other
-                )))
+                )));
             }
         };
         Ok(())
@@ -1199,11 +1238,7 @@ fn is_join_variable(expression: &str) -> bool {
 }
 
 fn c_bool(value: bool) -> &'static str {
-    if value {
-        "1.0"
-    } else {
-        "0.0"
-    }
+    if value { "1.0" } else { "0.0" }
 }
 
 fn operator_symbol(op: BinaryOp) -> &'static str {

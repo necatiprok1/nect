@@ -5,11 +5,15 @@ This extension provides language support for the Nect programming language, incl
 - **Syntax highlighting** for `.nct` files
 - **Language Server Protocol (LSP)** integration for:
   - Diagnostics (parse errors, type errors)
+  - Semantic highlighting
   - Hover information (types, function signatures)
+  - Signature help (function call information)
   - Go to definition
   - Find references
   - Code completion (keywords, built-ins, local variables/functions)
+  - Document symbols (outline view)
 - **Snippets** for common patterns
+- **Debug adapter** integration for breakpoints, stepping, and variable inspection
 
 ## Installation
 
@@ -59,10 +63,20 @@ npm run compile
 
 ### LSP Features
 - **Real-time diagnostics**: Parse errors shown as red squiggles
+- **Semantic highlighting**: Context-aware syntax coloring
 - **Hover**: Type information for variables and function signatures
+- **Signature help**: Function call parameter information
 - **Go to Definition**: Jump to `let` and `fn` declarations
 - **Find References**: Find usages of variables/functions
 - **Completion**: Context-aware suggestions for keywords, built-ins, and local symbols
+- **Document symbols**: Outline view showing functions and variables
+
+### Debug Adapter
+- **Breakpoints**: Set breakpoints by clicking in the gutter or using `b <line>`
+- **Step over**: Execute next statement (`n`/`next`/`step`)
+- **Continue**: Run to next breakpoint (`c`/`continue`)
+- **Local variables**: Inspect variables with `locals`
+- **Expression evaluation**: Print values with `p <expr>`
 
 ## Commands
 

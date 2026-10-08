@@ -1,7 +1,7 @@
 {
   "name": "nect-language",
   "displayName": "Nect Language Support",
-  "description": "Language support for Nect programming language including syntax highlighting and LSP integration",
+  "description": "Language support for the Nect programming language: syntax highlighting, LSP integration, and debugging over the Debug Adapter Protocol",
   "version": "0.1.0",
   "publisher": "nect-lang",
   "engines": {
@@ -62,7 +62,50 @@
           "description": "Trace level for LSP server communication"
         }
       }
-    }
+    },
+    "debuggers": [
+      {
+        "type": "nect",
+        "label": "Nect",
+        "languages": [
+          "nect"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the .nct file to debug.",
+                "default": "${file}"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "nect",
+            "request": "launch",
+            "name": "Debug current Nect file",
+            "program": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Nect: Debug current file",
+            "description": "Debug the .nect file in the active editor.",
+            "body": {
+              "type": "nect",
+              "request": "launch",
+              "name": "Debug current Nect file",
+              "program": "^\"\\${file}\""
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -78,7 +121,9 @@
     "vscode-languageclient": "^9.0.0"
   },
   "activationEvents": [
-    "onLanguage:nect"
+    "onLanguage:nect",
+    "onDebugResolve:nect",
+    "onDebugDynamicConfigurations:nect"
   ],
   "main": "./out/extension.js"
 }

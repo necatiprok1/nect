@@ -35,7 +35,9 @@ fn run_with_jit(source: &str, jit: bool) -> (String, String, bool) {
     let output = child.wait_with_output().expect("failed to run nect");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).trim_end().to_string(),
+        String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_string(),
         output.status.success(),
     )
 }
@@ -63,7 +65,10 @@ fn assert_output_both_engines(source: &str, expected: &str) {
             ok,
             "expected success with jit={jit}, stderr was: {stderr}\nfor: {source}"
         );
-        assert_eq!(stdout, expected, "unexpected stdout with jit={jit} for: {source}");
+        assert_eq!(
+            stdout, expected,
+            "unexpected stdout with jit={jit} for: {source}"
+        );
     }
 }
 
@@ -130,10 +135,7 @@ fn recursion_returns_correct_results() {
 
 #[test]
 fn assignment_evaluates_to_its_value() {
-    assert_output(
-        "let x = 0\nlet y = x = 5\nprint(x)\nprint(y)\n",
-        "5\n5\n",
-    );
+    assert_output("let x = 0\nlet y = x = 5\nprint(x)\nprint(y)\n", "5\n5\n");
 }
 
 #[test]
@@ -280,7 +282,10 @@ fn module_level_errors_after_a_native_prefix_still_raise() {
         "if (0) {\n    let g = 5\n}\nprint(g)\n",
         "error: undefined variable 'g'",
     );
-    assert_error("let x = 1\nreturn 5\n", "error: 'return' outside of a function");
+    assert_error(
+        "let x = 1\nreturn 5\n",
+        "error: 'return' outside of a function",
+    );
 }
 
 #[test]
@@ -333,10 +338,7 @@ fn compound_assignment_on_an_element_evaluates_the_index_once() {
 
 #[test]
 fn assignment_is_an_expression_for_elements_too() {
-    assert_output_both_engines(
-        "let a = [0, 0]\nprint(a[0] = 5)\nprint(a[0])\n",
-        "5\n5\n",
-    );
+    assert_output_both_engines("let a = [0, 0]\nprint(a[0] = 5)\nprint(a[0])\n", "5\n5\n");
 }
 
 #[test]
@@ -390,28 +392,45 @@ fn arrays_print_with_quoted_strings_and_nesting() {
 
 #[test]
 fn new_feature_error_messages_are_stable() {
-    assert_error("print([1, 2][-3])\n", "error: array index -3 out of bounds (length 2)");
-    assert_error("print([1, 2][\"x\"])\n", "error: array index must be a number, got string");
+    assert_error(
+        "print([1, 2][-3])\n",
+        "error: array index -3 out of bounds (length 2)",
+    );
+    assert_error(
+        "print([1, 2][\"x\"])\n",
+        "error: array index must be a number, got string",
+    );
     assert_error(
         "let s = \"abc\"\ns[0] = \"z\"\n",
         "error: strings are immutable: cannot assign to a string index",
     );
     assert_error("break\n", "error: 'break' outside of a loop");
-    assert_error("fn f() {\n    continue\n}\nf()\n", "error: 'continue' outside of a loop");
-    assert_error("for x in 5 {\n    print(x)\n}\n", "error: for loop requires an array or map");
+    assert_error(
+        "fn f() {\n    continue\n}\nf()\n",
+        "error: 'continue' outside of a loop",
+    );
+    assert_error(
+        "for x in 5 {\n    print(x)\n}\n",
+        "error: for loop requires an array or map",
+    );
     assert_error("assert(1 > 2, \"boom\")\n", "error: assertion failed: boom");
     assert_error("print(7 % 0)\n", "error: modulo by zero");
-    assert_error("print(sort([1, \"a\"]))\n", "error: sort() requires an array of only numbers or only strings");
-    assert_error("print(len)\n", "error: cannot use 'len' as a value (it is a function)");
+    assert_error(
+        "print(sort([1, \"a\"]))\n",
+        "error: sort() requires an array of only numbers or only strings",
+    );
+    assert_error(
+        "print(len)\n",
+        "error: cannot use 'len' as a value (it is a function)",
+    );
 }
 
 #[test]
 fn string_interpolation_splices_values_and_expressions() {
     assert_output_both_engines(
-        "let name = \"ada\"\nlet n = 3\nprint(\"hi ${name}, n*2 = ${n * 2}\")\nprint(\"${}\")".replace(
-            "${}",
-            "${name.upper()}",
-        ).as_str(),
+        "let name = \"ada\"\nlet n = 3\nprint(\"hi ${name}, n*2 = ${n * 2}\")\nprint(\"${}\")"
+            .replace("${}", "${name.upper()}")
+            .as_str(),
         "hi ada, n*2 = 6\nADA\n",
     );
 }
@@ -420,7 +439,10 @@ fn string_interpolation_splices_values_and_expressions() {
 fn interpolation_errors_are_reported_cleanly() {
     // The lexer reports a bad interpolated expression at the string.
     let (stdout, stderr, _) = run("print(\"${1 +}\")\n");
-    assert!(!stdout.is_empty() || stderr.contains("error"), "expected an error, got: {stderr}");
+    assert!(
+        !stdout.is_empty() || stderr.contains("error"),
+        "expected an error, got: {stderr}"
+    );
     assert!(stderr.contains("error"), "expected an error, got: {stderr}");
 }
 
@@ -529,7 +551,9 @@ fn run_interactive(source: &str, program_input: &str) -> (String, String, bool) 
     std::fs::remove_file(&path).ok();
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).trim_end().to_string(),
+        String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_string(),
         output.status.success(),
     )
 }
@@ -566,7 +590,10 @@ fn seeded_randomness_is_reproducible_across_engines() {
     assert!(vm_ok, "VM run failed: {vm_err}");
     assert!(jit_ok, "JIT run failed: {jit_err}");
     assert_eq!(vm_out, jit_out, "VM and JIT disagree on seeded randomness");
-    assert!(vm_out.starts_with("true\ntrue\n60\n"), "unexpected: {vm_out}");
+    assert!(
+        vm_out.starts_with("true\ntrue\n60\n"),
+        "unexpected: {vm_out}"
+    );
 }
 
 #[test]
@@ -588,7 +615,10 @@ fn the_calculator_evaluates_and_reports_errors() {
         "hata: eksik ifade",
         "Görüşürüz!",
     ] {
-        assert!(stdout.contains(expected), "missing {expected:?} in calculator output");
+        assert!(
+            stdout.contains(expected),
+            "missing {expected:?} in calculator output"
+        );
     }
     assert!(!stdout.contains("NaN"), "a NaN leaked into the display");
 }
@@ -596,16 +626,52 @@ fn the_calculator_evaluates_and_reports_errors() {
 #[test]
 fn benchmarks_produce_the_expected_values() {
     assert_output(include_str!("../benches/fib.nct"), "fib(30) = 832040\n");
-    assert_output(include_str!("../benches/loop.nct"), "sum(1..100000) = 4999950000\n");
-    assert_output(include_str!("../benches/mandelbrot.nct"), "mandelbrot total iterations: 136310\n");
-    assert_output(include_str!("../benches/neural_forward.nct"), "neural forward total: 557358.4\n");
-    assert_output(include_str!("../benches/gradient_descent.nct"), "gradient_descent result: -2.4999999999999893\n");
-    assert_output(include_str!("../benches/numerical_integration.nct"), "numerical integration: 33333333.333324775\n");
-    assert_output(include_str!("../benches/geometric_sum.nct"), "geometric sum: 9999.999999994685\n");
-    assert_output(include_str!("../benches/matmul.nct"), "matmul total: 233.92673999999997\n");
-    assert_output(include_str!("../benches/nested_loop.nct"), "nested loop total: 6128487000\n");
-    assert_output(include_str!("../benches/mean_squared_error.nct"), "mse sum: 320000.00000401394\n");
-    assert_output(include_str!("../benches/euclidean_distance.nct"), "euclidean distance total: 15366.749999999689\n");
-    assert_output(include_str!("../benches/relu_activation.nct"), "relu total: 3112500\n");
-    assert_output(include_str!("../benches/linear_regression.nct"), "linear regression: 4.983370139075106\n");
+    assert_output(
+        include_str!("../benches/loop.nct"),
+        "sum(1..100000) = 4999950000\n",
+    );
+    assert_output(
+        include_str!("../benches/mandelbrot.nct"),
+        "mandelbrot total iterations: 136310\n",
+    );
+    assert_output(
+        include_str!("../benches/neural_forward.nct"),
+        "neural forward total: 557358.4\n",
+    );
+    assert_output(
+        include_str!("../benches/gradient_descent.nct"),
+        "gradient_descent result: -2.4999999999999893\n",
+    );
+    assert_output(
+        include_str!("../benches/numerical_integration.nct"),
+        "numerical integration: 33333333.333324775\n",
+    );
+    assert_output(
+        include_str!("../benches/geometric_sum.nct"),
+        "geometric sum: 9999.999999994685\n",
+    );
+    assert_output(
+        include_str!("../benches/matmul.nct"),
+        "matmul total: 233.92673999999997\n",
+    );
+    assert_output(
+        include_str!("../benches/nested_loop.nct"),
+        "nested loop total: 6128487000\n",
+    );
+    assert_output(
+        include_str!("../benches/mean_squared_error.nct"),
+        "mse sum: 320000.00000401394\n",
+    );
+    assert_output(
+        include_str!("../benches/euclidean_distance.nct"),
+        "euclidean distance total: 15366.749999999689\n",
+    );
+    assert_output(
+        include_str!("../benches/relu_activation.nct"),
+        "relu total: 3112500\n",
+    );
+    assert_output(
+        include_str!("../benches/linear_regression.nct"),
+        "linear regression: 4.983370139075106\n",
+    );
 }

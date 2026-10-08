@@ -1,6 +1,47 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Source code span: byte range [start, end) and line/column for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub col: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize, line: usize, col: usize) -> Self {
+        Self {
+            start,
+            end,
+            line,
+            col,
+        }
+    }
+
+    pub fn merge(self, other: Span) -> Self {
+        if self.start == 0 && self.end == 0 {
+            return other;
+        }
+        if other.start == 0 && other.end == 0 {
+            return self;
+        }
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+            line: self.line.min(other.line),
+            col: self.col.min(other.col),
+        }
+    }
+}
+
+impl From<crate::lexer::Token> for Span {
+    fn from(token: crate::lexer::Token) -> Self {
+        Self::new(token.start, token.end, token.line, token.col)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Value),
@@ -176,4 +217,23 @@ pub enum Stmt {
         params: Vec<String>,
         body: Vec<Stmt>,
     },
+    /// FFI extern declaration: declares one or more functions from a shared
+    /// library. Each entry is `(name, param_types, return_type)` where types
+    /// are one of "number", "string", "bool", "void".
+    /// The library name is resolved by the platform's dynamic linker
+    /// (e.g. "m" -> libm.so on Linux, libm.dylib on macOS).
+    Extern {
+        library: String,
+        functions: Vec<(String, Vec<ExternType>, ExternType)>,
+        span: Span,
+    },
+}
+
+/// Parameter or return type for an extern function declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternType {
+    Number,
+    String,
+    Bool,
+    Void,
 }

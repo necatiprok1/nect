@@ -7,3 +7,30 @@ docs/site/*.html
 *.swo
 *~
 .DS_Store
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# The FFI test builds a C shared library at test time. The binary is a build
+# artifact of a platform-specific toolchain, so it is rebuilt rather than
+# committed — a committed .dylib or .so does not work on another platform.
+tests/libffi_test.dylib
+tests/libffi_test.so
+tests/ffi_test.dll
+
+# cargo-fuzz's build output and the crashes it finds. The corpus is committed
+# separately (fuzz/corpus/) because it is worth keeping; the target directory and
+# the artifacts are not.
+fuzz/target/
+fuzz/artifacts/
+fuzz/coverage/
+
+# Release output. `scripts/release.sh` builds cross-compiled trees here, and
+# they are large, regenerable, and meaningless on any other machine.
+/dist/
+/stage/
+
+# Editor and agent tooling that is local to one machine.
+/.ignore
+/opencode.json
+/.kilo/

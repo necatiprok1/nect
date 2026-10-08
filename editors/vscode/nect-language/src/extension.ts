@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
+import { activateDebugAdapter } from './debugAdapter';
 
 let client: LanguageClient;
 
@@ -88,6 +89,10 @@ export function activate(context: vscode.ExtensionContext) {
       client.outputChannel.show();
     })
   );
+
+  // Debugging is registered whether or not the language server is enabled: a
+  // user may want to step through a program with no LSP running at all.
+  activateDebugAdapter(context);
 }
 
 export function deactivate(): Thenable<void> | undefined {

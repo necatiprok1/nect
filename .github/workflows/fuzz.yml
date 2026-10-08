@@ -1,0 +1,94 @@
+name: Fuzzing
+
+# Differential and malformed-input testing.
+#
+# Two kinds of work run here. `tests/malformed_tests.rs` and
+# `tests/stress_tests.rs` are ordinary tests and run in CI proper. What runs here
+# is `cargo-fuzz`, which needs a nightly toolchain and a corpus that survives
+# between runs, so it gets its own workflow and its own schedule.
+#
+# A short run on every pull request catches a crash introduced by the change.
+# A long run on a schedule explores states nobody thought to write down. The
+# corpus is committed, so a run that finds something keeps it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1,4'
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 25 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [lexer, parser, vm, interpreter]
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz needs nightly for its sanitiser plumbing; the rest of the
+      # project builds on stable, so this is a separate toolchain rather than a
+      # pin the whole repository has to live with.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            fuzz/target
+          key: fuzz-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.lock') }}
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build the fuzz targets
+        working-directory: fuzz
+        run: cargo fuzz build ${{ matrix.target }}
+
+      # A seed run so the first minutes explore the grammar rather than re-testing
+      # whatever the corpus already contains.
+      - name: Seed the corpus
+        if: github.event_name == 'pull_request'
+        working-directory: fuzz
+        run: |
+          mkdir -p "corpus/${{ matrix.target }}"
+          cargo fuzz run "${{ matrix.target }}" \
+            -- -max_total_time=45 -max_len=4096 -dict=/dev/null || true
+
+      - name: Fuzz
+        working-directory: fuzz
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION=3000
+          else
+            DURATION=60
+          fi
+          echo "Fuzzing ${{ matrix.target }} for ${DURATION}s"
+          cargo fuzz run "${{ matrix.target }}" \
+            -- -max_total_time="$DURATION" -max_len=4096 -print_final_stats=1
+
+      # A crash leaves an artifact; failing the job with the reproducer attached
+      # is the point, so the step deliberately does not swallow the exit code.
+      - name: Upload any crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/
+          retention-days: 30
+
+      - name: Upload the corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: fuzz/corpus/
+          retention-days: 30

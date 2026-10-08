@@ -37,6 +37,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const node_1 = require("vscode-languageclient/node");
+const debugAdapter_1 = require("./debugAdapter");
 let client;
 function activate(context) {
     console.log('Nect Language Support is now active');
@@ -103,6 +104,9 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand('nect.showOutput', () => {
         client.outputChannel.show();
     }));
+    // Debugging is registered whether or not the language server is enabled: a
+    // user may want to step through a program with no LSP running at all.
+    (0, debugAdapter_1.activateDebugAdapter)(context);
 }
 function deactivate() {
     if (!client) {

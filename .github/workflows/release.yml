@@ -1,0 +1,335 @@
+name: Release
+
+# Publishing a release. Everything here runs only once a GitHub release is
+# published, which means the artefacts are built from a tagged commit rather
+# than from whatever happens to be on `main`.
+#
+# The order matters: nothing is uploaded until every platform has built, so a
+# release cannot end up with a Linux binary and no Windows one.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and retain workflow artefacts without publishing to a release
+        type: boolean
+        default: true
+      tag:
+        description: Existing release tag (required to publish; optional for a dry run)
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Validate manual publication
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$RELEASE_TAG" ]; then
+            echo '::error::Publishing requires an existing release tag in the tag input.'
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+      # A release built from a red build is worse than no release. Both shapes
+      # are checked, because they compile different code: the lean build has no
+      # GUI, HTTP, database, LSP, package, or FFI. The all-features test also
+      # covers the opt-in groups that are not part of the shipped full variant.
+      - name: Test (lean)
+        run: cargo test --locked --release --no-default-features
+
+      - name: Test (all features)
+        run: cargo test --locked --release --all-features
+
+      - name: Clippy (lean)
+        run: cargo clippy --locked --no-default-features --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --locked --all-features --all-targets -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Check the committed API reference
+        run: |
+          cargo run --locked --release --all-features -- doc --out reference
+          diff -u docs/API.md reference/API.md
+
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.variant }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    env:
+      # Link the Windows runtime into the executable, not a redistributable DLL.
+      RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
+      RELEASE_VERSION: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+    strategy:
+      fail-fast: false
+      # `lean` is the language itself: about 3 MB and 50 crates. `full` adds
+      # the language server, the package manager, and the FFI, and is what to
+      # install for editor/package tooling (not GUI, HTTP, or database). Every
+      # combination is listed rather than cross-producted, so adding a
+      # platform cannot silently skip a variant.
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            variant: lean
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            variant: full
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            variant: lean
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            variant: full
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            variant: lean
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            variant: full
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            variant: lean
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            variant: full
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            variant: lean
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            variant: full
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.variant }}" = "full" ]; then
+            cargo build --locked --release --no-default-features --features full --target ${{ matrix.target }}
+          else
+            cargo build --locked --release --no-default-features --target ${{ matrix.target }}
+          fi
+
+      # The binary is exercised on the platform it was built for, so an
+      # artefact that cannot run is caught here rather than by a user.
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/nect${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "$BIN" --version
+          "$BIN" doctor
+          # The two variants are not the same program: the lean build must not
+          # claim the optional groups, and the full build must claim them.
+          if [ "${{ matrix.variant }}" = "full" ]; then
+            "$BIN" --version | tr -d '\r' | grep -Fx 'built-ins: core + lsp, pkg, ffi'
+          else
+            "$BIN" --version | tr -d '\r' | grep -Fx 'built-ins: core only'
+          fi
+          printf 'let total = 0\nlet i = 0\nwhile i < 10 { total = total + i\n  i = i + 1 }\nprint(total)\n' > smoke.nct
+          "$BIN" run smoke.nct | tr -d '\r' | grep -Fx 45
+
+      # The archive name deliberately carries no version: the installer fetches
+      # `.../releases/latest/download/nect-<target>[-full].<ext>`, so the name
+      # has to be stable across releases for the one-line install to keep
+      # working. The version lives inside the archive and in SHA256SUMS.
+      - name: Package and verify (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUFFIX=""
+          if [ "${{ matrix.variant }}" = "full" ]; then
+            SUFFIX="-full"
+          fi
+          NAME="nect-${{ matrix.target }}${SUFFIX}"
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/nect" "dist/$NAME/"
+          printf '%s\n' "$RELEASE_VERSION" > "dist/$NAME/VERSION"
+          shopt -s nullglob
+          cp README.md LICENSE* "dist/$NAME/"
+          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
+          rm -rf "dist/$NAME"
+          UNPACK=$(mktemp -d)
+          trap 'rm -rf "$UNPACK"' EXIT
+          tar -xzf "dist/$NAME.tar.gz" -C "$UNPACK"
+          "$UNPACK/$NAME/nect" --version
+          "$UNPACK/$NAME/nect" run smoke.nct | grep -Fx 45
+
+      - name: Package and verify (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suffix = if ('${{ matrix.variant }}' -eq 'full') { '-full' } else { '' }
+          $name = "nect-${{ matrix.target }}$suffix"
+          $binary = 'target/${{ matrix.target }}/release/nect.exe'
+          New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
+          Copy-Item $binary "dist/$name/nect.exe"
+          Set-Content -Path "dist/$name/VERSION" -Value $env:RELEASE_VERSION -Encoding utf8
+          Copy-Item README.md "dist/$name/"
+          Get-ChildItem -File -Filter 'LICENSE*' | Copy-Item -Destination "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          # A direct download needs neither an archive tool nor a VC runtime.
+          Copy-Item $binary "dist/nect$suffix.exe"
+          Remove-Item "dist/$name" -Recurse -Force
+          $unpack = Join-Path $env:RUNNER_TEMP "$name-unpacked"
+          try {
+            Expand-Archive -Path "dist/$name.zip" -DestinationPath $unpack -Force
+            $packedBinary = Join-Path $unpack "$name/nect.exe"
+            & $packedBinary --version
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged binary failed --version' }
+            $output = & $packedBinary run smoke.nct
+            if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -ne '45') {
+              throw 'Packaged binary failed the smoke test'
+            }
+          } finally {
+            Remove-Item $unpack -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}-${{ matrix.variant }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      RELEASE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Collect every artefact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist/
+          merge-multiple: true
+
+      - name: List what is being published
+        run: ls -la dist/
+
+
+      - name: Release notes
+        if: ${{ github.event_name == 'release' || !inputs.dry-run }}
+        run: |
+          # Generated from the commit log, so the notes cannot describe work that
+          # was not done. A repository whose commits predate the convention falls
+          # back to the log itself rather than producing an empty document.
+          NOTES=$(python3 scripts/release-notes.py "$RELEASE_TAG" || true)
+          if [ -z "$NOTES" ]; then
+            NOTES=$(git --no-pager log --pretty='- %s' -20)
+          fi
+          echo "$NOTES" > NOTES.md
+          cat NOTES.md
+
+      - name: Verify an artefact before it is published
+        run: |
+          # Unpack and run one, so a broken archive is caught before a user finds
+          # it. This is the check `docs/platforms.md` promises.
+          set -euo pipefail
+          UNPACK=$(mktemp -d)
+          trap 'rm -rf "$UNPACK"' EXIT
+          tar -xzf dist/nect-x86_64-unknown-linux-gnu.tar.gz -C "$UNPACK"
+          BIN="$UNPACK/nect-x86_64-unknown-linux-gnu/nect"
+          "$BIN" --version
+          printf 'print("ok")\n' > "$UNPACK/smoke.nct"
+          "$BIN" run "$UNPACK/smoke.nct" | grep -Fx ok
+
+      # The installers are published next to the binaries, because
+      # `curl ... install.sh` is the documented one-line install and it has to
+      # resolve to a real asset.
+      - name: Stage the installers
+        run: |
+          cp scripts/install.sh dist/install.sh
+          cp scripts/install.ps1 dist/install.ps1
+          # Point published copies at this repository; leave source installers untouched.
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          repo = os.environ['RELEASE_REPOSITORY']
+          for name, old, new in [
+              ('install.sh', 'REPO="necatiprok1/nect"', f'REPO="{repo}"'),
+              ('install.ps1', "$Repo = 'necatiprok1/nect'", f"$Repo = '{repo}'"),
+          ]:
+              source = Path('scripts', name).read_text()
+              if source.count(old) != 1:
+                  raise SystemExit(f'{name}: expected exactly one repository setting')
+              Path('dist', name).write_text(source.replace(old, new))
+          PY
+          chmod +x dist/install.sh
+          ls -la dist/install.*
+
+      # Stage installers first so the manifest covers every downloadable asset.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum * > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Retain the complete release bundle (also on dry runs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload to the release
+        if: ${{ github.event_name == 'release' || !inputs.dry-run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*
+          body_path: NOTES.md
+          draft: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}

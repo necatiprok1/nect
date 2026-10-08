@@ -1,0 +1,16 @@
+# Array indexing benchmark — exercises the array path of get_index.
+# This is a hot path but already allocation-free (clone of Rc).
+# Included to establish a baseline.
+let a = []
+let i = 0
+while i < 1000 {
+    push(a, i)
+    i = i + 1
+}
+let total = 0
+let j = 0
+while j < len(a) {
+    total = total + a[j]
+    j = j + 1
+}
+print(total)

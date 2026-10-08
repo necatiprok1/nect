@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // The value-level core lives in `builtins`, shared with the bytecode VM.
-pub use crate::builtins::{format_value, is_truthy, type_name, RuntimeError};
-use crate::builtins::{apply_binary, apply_unary, get_index, set_index, Map, Future, ThreadHandle};
+use crate::builtins::{Map, ThreadHandle, apply_binary, apply_unary, get_index, set_index};
+pub use crate::builtins::{RuntimeError, format_value, is_truthy, type_name};
 
 type Scope = HashMap<String, Value>;
 type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, RuntimeError>>;
@@ -25,7 +25,9 @@ enum FlowKind {
 
 impl From<RuntimeError> for FlowError {
     fn from(e: RuntimeError) -> Self {
-        FlowError { kind: FlowKind::Error(e) }
+        FlowError {
+            kind: FlowKind::Error(e),
+        }
     }
 }
 
@@ -101,12 +103,12 @@ impl Interpreter {
         let mut env = Environment::new();
         // Every builtin comes from the shared library, so the reference
         // interpreter and the bytecode VM expose exactly the same surface.
-        for name in crate::builtins::NAMES {
+        for name in crate::builtins::names() {
             env.define_native(name, Rc::new(move |args| crate::builtins::call(name, args)));
         }
         Self { env }
     }
-    
+
     /// Get all variables in the current scope (for debugger)
     pub fn get_locals(&self) -> Vec<(String, Value)> {
         if let Some(scope) = self.env.scopes.last() {
@@ -115,7 +117,7 @@ impl Interpreter {
             vec![]
         }
     }
-    
+
     /// Evaluate an expression string in the current context (for debugger print)
     pub fn eval_expr(&mut self, expr_str: &str) -> Result<Value, String> {
         let lexer = crate::lexer::Lexer::new(expr_str);
@@ -129,14 +131,22 @@ impl Interpreter {
         for stmt in stmts {
             match self.execute(stmt) {
                 Ok(()) => {}
-                Err(FlowError { kind: FlowKind::Error(e) }) => return Err(e),
-                Err(FlowError { kind: FlowKind::Return(_) }) => {
+                Err(FlowError {
+                    kind: FlowKind::Error(e),
+                }) => return Err(e),
+                Err(FlowError {
+                    kind: FlowKind::Return(_),
+                }) => {
                     return Err(RuntimeError::new("'return' outside of a function"));
                 }
-                Err(FlowError { kind: FlowKind::Break }) => {
+                Err(FlowError {
+                    kind: FlowKind::Break,
+                }) => {
                     return Err(RuntimeError::new("'break' outside of a loop"));
                 }
-                Err(FlowError { kind: FlowKind::Continue }) => {
+                Err(FlowError {
+                    kind: FlowKind::Continue,
+                }) => {
                     return Err(RuntimeError::new("'continue' outside of a loop"));
                 }
             }
@@ -177,14 +187,23 @@ impl Interpreter {
             Stmt::While { condition, body } => {
                 while is_truthy(&self.eval(condition)?) {
                     match self.execute_block(body) {
-                        Ok(()) | Err(FlowError { kind: FlowKind::Continue }) => {}
-                        Err(FlowError { kind: FlowKind::Break }) => break,
+                        Ok(())
+                        | Err(FlowError {
+                            kind: FlowKind::Continue,
+                        }) => {}
+                        Err(FlowError {
+                            kind: FlowKind::Break,
+                        }) => break,
                         Err(other) => return Err(other),
                     }
                 }
                 Ok(())
             }
-            Stmt::For { var_name, iterable, body } => {
+            Stmt::For {
+                var_name,
+                iterable,
+                body,
+            } => {
                 let iterable_value = self.eval(iterable)?;
                 // A map iterates its keys in insertion order; arrays iterate
                 // their elements. Everything else is the old error.
@@ -194,18 +213,24 @@ impl Interpreter {
                     _ => {
                         return Err(FlowError::from(RuntimeError::new(
                             "for loop requires an array or map",
-                        )))
+                        )));
                     }
                 };
                 let len = items.len();
                 let arr_rc = Rc::new(RefCell::new(items));
                 let mut i = 0;
                 while i < len {
-                    self.env.define(var_name.clone(), arr_rc.borrow()[i].clone());
+                    self.env
+                        .define(var_name.clone(), arr_rc.borrow()[i].clone());
                     match self.execute_block(body) {
                         // `continue` still advances the index.
-                        Ok(()) | Err(FlowError { kind: FlowKind::Continue }) => {}
-                        Err(FlowError { kind: FlowKind::Break }) => break,
+                        Ok(())
+                        | Err(FlowError {
+                            kind: FlowKind::Continue,
+                        }) => {}
+                        Err(FlowError {
+                            kind: FlowKind::Break,
+                        }) => break,
                         Err(other) => return Err(other),
                     }
                     i += 1;
@@ -235,10 +260,52 @@ impl Interpreter {
                     Some(e) => self.eval(e)?,
                     None => Value::Null,
                 };
-                Err(FlowError { kind: FlowKind::Return(val) })
+                Err(FlowError {
+                    kind: FlowKind::Return(val),
+                })
             }
-            Stmt::Break => Err(FlowError { kind: FlowKind::Break }),
-            Stmt::Continue => Err(FlowError { kind: FlowKind::Continue }),
+            Stmt::Break => Err(FlowError {
+                kind: FlowKind::Break,
+            }),
+            Stmt::Continue => Err(FlowError {
+                kind: FlowKind::Continue,
+            }),
+            Stmt::Extern {
+                library, functions, ..
+            } => {
+                // The interpreter has no natives table to index by symbol, so
+                // each declared function is bound directly in the environment.
+                // The library handle is leaked on purpose: the closure stays
+                // callable for the life of the process, and dropping the last
+                // handle would unmap the code we are calling into.
+                // Without the `ffi` feature there is no `libloading` to load
+                // with, so the declaration is a hard error rather than a
+                // silently skipped one.
+                #[cfg(not(feature = "ffi"))]
+                {
+                    let _ = (library, functions);
+                    Err(FlowError::from(crate::builtins::ffi_unavailable()))
+                }
+                #[cfg(feature = "ffi")]
+                {
+                    let lib = match crate::ffi::load_library_for_interp(library) {
+                        Ok(lib) => lib,
+                        Err(e) => return Err(FlowError::from(RuntimeError::new(&e))),
+                    };
+                    for (name, params, ret) in functions {
+                        let native = crate::ffi::resolve_interpreter_native(
+                            &lib,
+                            name,
+                            params.clone(),
+                            *ret,
+                        )
+                        .map_err(|e| FlowError::from(RuntimeError::new(&e)))?;
+                        self.env.define_native(name, native);
+                    }
+                    std::mem::forget(lib);
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -272,31 +339,29 @@ impl Interpreter {
                 self.env.assign_or_define(name, val.clone());
                 Ok(val)
             }
-            Expr::Binary { left, op, right } => {
-                match op {
-                    BinaryOp::And => {
-                        let l = self.eval(left)?;
-                        if !is_truthy(&l) {
-                            return Ok(Value::Boolean(false));
-                        }
-                        let r = self.eval(right)?;
-                        Ok(Value::Boolean(is_truthy(&r)))
+            Expr::Binary { left, op, right } => match op {
+                BinaryOp::And => {
+                    let l = self.eval(left)?;
+                    if !is_truthy(&l) {
+                        return Ok(Value::Boolean(false));
                     }
-                    BinaryOp::Or => {
-                        let l = self.eval(left)?;
-                        if is_truthy(&l) {
-                            return Ok(Value::Boolean(true));
-                        }
-                        let r = self.eval(right)?;
-                        Ok(Value::Boolean(is_truthy(&r)))
-                    }
-                    _ => {
-                        let l = self.eval(left)?;
-                        let r = self.eval(right)?;
-                        self.eval_binary(l, *op, r)
-                    }
+                    let r = self.eval(right)?;
+                    Ok(Value::Boolean(is_truthy(&r)))
                 }
-            }
+                BinaryOp::Or => {
+                    let l = self.eval(left)?;
+                    if is_truthy(&l) {
+                        return Ok(Value::Boolean(true));
+                    }
+                    let r = self.eval(right)?;
+                    Ok(Value::Boolean(is_truthy(&r)))
+                }
+                _ => {
+                    let l = self.eval(left)?;
+                    let r = self.eval(right)?;
+                    self.eval_binary(l, *op, r)
+                }
+            },
             Expr::Unary { op, operand } => {
                 let v = self.eval(operand)?;
                 self.eval_unary(*op, v)
@@ -330,10 +395,8 @@ impl Interpreter {
                 self.call_function(&func_val, &arg_vals)
             }
             Expr::Array(elements) => {
-                let vals: Result<Vec<Value>, RuntimeError> = elements
-                    .iter()
-                    .map(|e| self.eval(e))
-                    .collect();
+                let vals: Result<Vec<Value>, RuntimeError> =
+                    elements.iter().map(|e| self.eval(e)).collect();
                 Ok(Value::Array(Rc::new(RefCell::new(vals?))))
             }
             Expr::Map(entries) => {
@@ -385,7 +448,9 @@ impl Interpreter {
                         let handle = std::thread::spawn(|| {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         });
-                        Ok(Value::ThreadHandle(Rc::new(RefCell::new(ThreadHandle::new(handle)))))
+                        Ok(Value::ThreadHandle(Rc::new(RefCell::new(
+                            ThreadHandle::new(handle),
+                        ))))
                     }
                     other => Err(RuntimeError::new(&format!(
                         "spawn() requires a function, got {}",
@@ -410,7 +475,9 @@ impl Interpreter {
                 if args.len() != func.params.len() {
                     return Err(RuntimeError::new(&format!(
                         "function '{}' expects {} argument(s), got {}",
-                        func.name, func.params.len(), args.len()
+                        func.name,
+                        func.params.len(),
+                        args.len()
                     )));
                 }
                 self.env.push_scope();
@@ -421,16 +488,20 @@ impl Interpreter {
                 self.env.pop_scope();
                 match result {
                     Ok(()) => Ok(Value::Null),
-                    Err(FlowError { kind: FlowKind::Return(val) }) => Ok(val),
-                    Err(FlowError { kind: FlowKind::Error(e) }) => Err(e),
+                    Err(FlowError {
+                        kind: FlowKind::Return(val),
+                    }) => Ok(val),
+                    Err(FlowError {
+                        kind: FlowKind::Error(e),
+                    }) => Err(e),
                     // A loop always catches these, so reaching here means the
                     // keyword sits outside any loop.
-                    Err(FlowError { kind: FlowKind::Break }) => {
-                        Err(RuntimeError::new("'break' outside of a loop"))
-                    }
-                    Err(FlowError { kind: FlowKind::Continue }) => {
-                        Err(RuntimeError::new("'continue' outside of a loop"))
-                    }
+                    Err(FlowError {
+                        kind: FlowKind::Break,
+                    }) => Err(RuntimeError::new("'break' outside of a loop")),
+                    Err(FlowError {
+                        kind: FlowKind::Continue,
+                    }) => Err(RuntimeError::new("'continue' outside of a loop")),
                 }
             }
             _ => Err(RuntimeError::new("can only call functions")),

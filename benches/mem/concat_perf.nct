@@ -1,0 +1,10 @@
+# String concatenation with concat() — exercises the concat builtin.
+# Before the fix, concat collected Vec<String> then concatenated.
+# Now it builds a single String directly.
+let s = "x"
+let i = 0
+while i < 5000 {
+    s = concat(s, "y", "z", i)
+    i = i + 1
+}
+print(len(s))

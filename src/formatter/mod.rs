@@ -84,7 +84,11 @@ impl Formatter {
                 self.write_indent();
                 self.output.push('}');
             }
-            If { condition, then_branch, else_branch } => {
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 self.write_indent();
                 self.output.push_str("if ");
                 self.format_expr(condition);
@@ -92,7 +96,7 @@ impl Formatter {
                 self.format_brace_block(then_branch);
                 if !else_branch.is_empty() {
                     self.output.push_str(" else ");
-                    self.format_brace_block(&else_branch);
+                    self.format_brace_block(else_branch);
                 }
                 self.output.push('\n');
             }
@@ -134,7 +138,11 @@ impl Formatter {
                 self.write_indent();
                 self.output.push_str("return\n");
             }
-            For { var_name, iterable, body } => {
+            For {
+                var_name,
+                iterable,
+                body,
+            } => {
                 self.write_indent();
                 self.output.push_str("for ");
                 self.output.push_str(var_name);
@@ -151,6 +159,49 @@ impl Formatter {
             Continue => {
                 self.write_indent();
                 self.output.push_str("continue\n");
+            }
+            Extern {
+                library, functions, ..
+            } => {
+                self.write_indent();
+                self.output.push_str("extern \"");
+                self.output.push_str(library);
+                self.output.push_str("\" {\n");
+                self.indent_level += 1;
+                for (i, (fname, ptypes, rtype)) in functions.iter().enumerate() {
+                    self.write_indent();
+                    self.output.push_str("fn ");
+                    self.output.push_str(fname);
+                    self.output.push('(');
+                    let type_names: Vec<&str> = ptypes
+                        .iter()
+                        .map(|t| match t {
+                            crate::ast::ExternType::Number => "number",
+                            crate::ast::ExternType::String => "string",
+                            crate::ast::ExternType::Bool => "bool",
+                            crate::ast::ExternType::Void => "void",
+                        })
+                        .collect();
+                    self.output.push_str(&type_names.join(", "));
+                    self.output.push(')');
+                    if *rtype != crate::ast::ExternType::Void {
+                        self.output.push_str(" -> ");
+                        let ret_name = match rtype {
+                            crate::ast::ExternType::Number => "number",
+                            crate::ast::ExternType::String => "string",
+                            crate::ast::ExternType::Bool => "bool",
+                            crate::ast::ExternType::Void => "void",
+                        };
+                        self.output.push_str(ret_name);
+                    }
+                    self.output.push_str(";\n");
+                    if i < functions.len() - 1 {
+                        self.newline();
+                    }
+                }
+                self.indent_level -= 1;
+                self.write_indent();
+                self.output.push_str("}\n");
             }
         }
     }
@@ -171,7 +222,7 @@ impl Formatter {
                 self.output.push('}');
             }
             BraceStyle::NextLine => {
-                self.output.push_str("\n");
+                self.output.push('\n');
                 self.write_indent();
                 self.output.push_str("{\n");
                 self.indent_level += 1;
@@ -259,7 +310,12 @@ impl Formatter {
                 self.format_expr(index);
                 self.output.push(']');
             }
-            SetIndex { array, index, op, value } => {
+            SetIndex {
+                array,
+                index,
+                op,
+                value,
+            } => {
                 self.format_expr(array);
                 self.output.push('[');
                 self.format_expr(index);
@@ -273,7 +329,11 @@ impl Formatter {
                 }
                 self.format_expr(value);
             }
-            Conditional { condition, then_expr, else_expr } => {
+            Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.format_expr(condition);
                 self.output.push_str(" ? ");
                 self.format_expr(then_expr);

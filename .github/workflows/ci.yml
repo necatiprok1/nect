@@ -1,59 +1,192 @@
-name: CI/CD
+name: CI
+
+# Build, test, and lint. Runs on every push and pull request, which is the
+# fastest signal a change is sound. The slower jobs — benchmarks, fuzzing,
+# release — live in their own workflows so a change to a test does not queue
+# behind a fuzzing run, and so a failure names the thing that broke.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  # Two shapes, because they compile different code. The lean build has no GUI,
+  # HTTP, database, LSP, package, or FFI, so a change can pass the full build and
+  # still break the lean one — a `use reqwest::` that was never gated, a test
+  # that reached for an optional module. Both run on every platform.
   build-and-test:
+    name: Build & Test (${{ matrix.target }}, ${{ matrix.variant }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        rust: [stable]
+        # Listed rather than cross-producted, so adding a platform cannot
+        # silently skip a variant.
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            cross: false
+            variant: lean
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            cross: false
+            variant: full
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross: true
+            variant: lean
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            cross: false
+            variant: lean
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            cross: false
+            variant: full
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            cross: false
+            variant: lean
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cross: false
+            variant: lean
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cross: false
+            variant: full
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install cross (for ARM64 Linux)
+        if: matrix.cross
+        run: cargo install cross --locked --git https://github.com/cross-rs/cross
+
+      # `cargo` or `cross`, with the feature flags this matrix entry needs. Set
+      # once so the build, test, and clippy steps cannot disagree about it.
+      - name: Select the build shape
+        run: |
+          if [ "${{ matrix.variant }}" = "full" ]; then
+            FEATURES="--features full"
+          else
+            FEATURES=""
+          fi
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            CARGO="cross"
+          else
+            CARGO="cargo"
+          fi
+          echo "CARGO=$CARGO" >> "$GITHUB_ENV"
+          echo "FEATURES=$FEATURES" >> "$GITHUB_ENV"
+          echo "Building with $CARGO $FEATURES for ${{ matrix.target }}"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          # The variant is part of the key: the two builds write different
+          # artefacts into the same target directory, so sharing a cache between
+          # them would make a run compile the wrong thing.
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --release
+        run: $CARGO build --release $FEATURES --target ${{ matrix.target }}
 
-      - name: Run tests
-        run: cargo test
+      # The AOT suite compiles C, so the cross image needs one; the rest use the
+      # runner's own.
+      - name: Test
+        run: $CARGO test --release $FEATURES --target ${{ matrix.target }}
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: $CARGO clippy --all-targets $FEATURES --target ${{ matrix.target }} -- -D warnings
 
       - name: Format check
+        if: ${{ !matrix.cross }}
         run: cargo fmt --check
 
-  release:
-    needs: build-and-test
+  # `nect doc --check` fails when the committed API reference no longer matches
+  # what the source says, which is the failure a hand-maintained reference has
+  # and a generated one does not.
+  docs-check:
+    name: Documentation
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' && github.event.action == 'published'
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      # `--all-features` because the reference documents the whole language: a
+      # lean build would omit the GUI built-ins that `examples/gui_demo.nct`
+      # uses, and the diff below would then fail on every run.
+      - name: Build the API reference
+        run: cargo run --release --all-features -- doc --out reference
 
-      - name: Build release
-        run: cargo build --release
-
-      - name: Create release archive
+      - name: Check the committed reference is current
         run: |
-          mkdir -p nect-${{ github.ref_name }}-linux
-          cp target/release/nect nect-${{ github.ref_name }}-linux/
-          tar czf nect-${{ github.ref_name }}-linux.tar.gz nect-${{ github.ref_name }}-linux/
+          if ! diff -u docs/API.md reference/API.md; then
+            echo
+            echo "docs/API.md is out of date. Run: nect doc --out docs"
+            exit 1
+          fi
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - name: Build rustdoc
+        run: cargo doc --no-deps --all-features
+
+      - name: Upload docs
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            nect-${{ github.ref_name }}-linux.tar.gz
+          name: documentation
+          path: target/doc/
+          retention-days: 7
+
+  # The extension's manifest declares commands and a debug adapter the binary has
+  # to have. `tests/cli_tests.rs` checks that, and this makes a mismatch visible
+  # here rather than only in the test log.
+  vscode-extension:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: editors/vscode/nect-language
+        run: npm ci
+
+      - name: Type-check
+        working-directory: editors/vscode/nect-language
+        run: npx tsc --noEmit -p tsconfig.json
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo-audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check licences and bans
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check licenses bans

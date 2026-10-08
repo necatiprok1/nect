@@ -4,8 +4,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::{Client, LspService, Server};
 
-pub mod server;
 pub mod documents;
+pub mod index;
+pub mod server;
 
 use server::NectLanguageServer;
 
@@ -13,7 +14,7 @@ pub async fn start_lsp_server() -> Result<(), Box<dyn std::error::Error>> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(|client| NectLanguageServer::new(client));
+    let (service, socket) = LspService::new(NectLanguageServer::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 
     Ok(())
@@ -84,6 +85,8 @@ impl NectLanguageServerInner {
         if let Some(doc) = docs.get_mut(uri) {
             doc.diagnostics = diagnostics.clone();
         }
-        self.client.publish_diagnostics(uri.clone(), diagnostics, None).await;
+        self.client
+            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .await;
     }
 }

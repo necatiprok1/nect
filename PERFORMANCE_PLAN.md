@@ -6,6 +6,33 @@
 - **Loop Sum 100k**: 0.039s (Python: 0.018s) → **2.15x slower**
 - **Factorial iterative**: 0.003s (Python: 0.014s) → **4.67x faster** (f64 beats Python bigint)
 
+## Binary size and dependency footprint
+
+Speed was not the only cost. A plain `cargo build` used to pull in `egui`/
+`eframe` (~150 crates), `reqwest` (~106), `tower-lsp` (~52), `axum` (~49), and
+`rusqlite` with its bundled C library — so compiling Nect meant compiling a GUI
+toolkit, and the release binary was 18 MB for a language whose core is numbers,
+strings, and arrays.
+
+Those are now cargo features (`net`, `server`, `db`, `gui`, `lsp`, `pkg`,
+`ffi`; `full` = `lsp` + `pkg` + `ffi`), off by default. Measured on this machine
+with `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`:
+
+| Build | Crates | Release binary | Before |
+| --- | --- | --- | --- |
+| lean (default) | 50 | **3.0 MB** | 18 MB, ~340 crates |
+| `full` (`lsp` + `pkg` + `ffi`) | 235 | **7.1 MB** | 18 MB, ~340 crates |
+| `--all-features` (adds GUI + HTTP + SQLite) | 338 | 12.4 MB | 18 MB, ~340 crates |
+
+`panic` stays at `unwind` in the release profile on purpose: `src/jit/mod.rs`
+catches a panic from Cranelift so a function that fails to compile falls back to
+the bytecode VM. `panic = "abort"` would remove that safety net for a size win
+that is not worth it.
+
+The disk cost of a development checkout is dominated by `target/`, not by the
+source: after a full `--all-features` build and test run it reached 18 GB, while
+the whole tracked repository is under 2 MB. `cargo clean` gives the space back.
+
 ## Goal
 Be **at least 10x faster than Python** on all benchmarks.
 

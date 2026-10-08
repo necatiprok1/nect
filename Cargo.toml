@@ -2,28 +2,90 @@
 name = "nect"
 version = "0.1.0"
 edition = "2024"
+# Edition 2024 and the Cranelift dependency both need 1.85. Declared so
+# `nect --version` can report it and so a too-old toolchain fails with a clear
+# message instead of a parse error deep in the build.
+rust-version = "1.85"
+
+# Nect builds in layers. A plain `cargo build` gives the language: the lexer,
+# parser, VM, JIT, C backend, debugger, and a standard library that is pure
+# Rust. Everything below pulls in a large third-party dependency tree and is off
+# by default, so installing Nect does not download a GUI toolkit, an HTTP stack,
+# and a database engine in order to run a hello-world.
+#
+# Measured crate counts for the default build: see `docs/KURULUM.md`.
+[features]
+default = []
+
+# HTTP client. This is most of `reqwest`.
+net = ["dep:reqwest"]
+# HTTP server. This is `axum`.
+server = ["dep:axum"]
+# SQLite built-ins. `rusqlite` compiles its own copy of the C library.
+db = ["dep:rusqlite"]
+# Native GUI. `egui`/`eframe` — by far the largest, about 150 crates.
+gui = ["dep:egui", "dep:eframe"]
+# The language server, which is `tower-lsp` and a full async runtime.
+lsp = ["dep:tower-lsp", "dep:lsp-types", "dep:tokio"]
+# The package manager: manifest parsing, the registry client, and archives.
+pkg = ["dep:serde", "dep:toml", "dep:sha2", "dep:flate2", "dep:tar", "dep:dirs", "dep:semver", "dep:reqwest"]
+# The FFI built-ins, which need `libloading`.
+ffi = ["dep:libloading"]
+
+# Everything a developer normally wants: the language server, the package
+# manager, and the FFI. The GUI, database, and HTTP stacks stay opt-in because
+# they are large and rarely used by everyone.
+full = ["lsp", "pkg", "ffi"]
 
 [dependencies]
+# The JIT. Always present: it is the reason the language is fast, and it is a
+# modest dependency tree next to the ones below.
 cranelift-codegen = "0.135.2"
 cranelift-frontend = "0.135.2"
 cranelift-jit = "0.135.2"
 cranelift-module = "0.135.2"
 cranelift-native = "0.135.2"
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
-axum = { version = "0.7", features = ["macros"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
-semver = "1.0"
-dirs = "5.0"
-flate2 = "1.0"
-tar = "0.4"
-sha2 = "0.10"
-tower-lsp = "0.20"
-lsp-types = "0.94"
-tokio = { version = "1", features = ["full"] }
-egui = "0.30"
-eframe = { version = "0.30", features = ["default"] }
+
+# Always present and small: JSON for the web helpers, and the SHA-256 that
+# `json_*` and the security tests share.
+serde_json = "1.0"
+
+# Everything below is optional and behind a feature, because each one is a large
+# third-party tree. See the `[features]` table above.
+serde = { version = "1.0", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"], optional = true }
+axum = { version = "0.7", features = ["macros"], optional = true }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+semver = { version = "1.0", optional = true }
+dirs = { version = "5.0", optional = true }
+flate2 = { version = "1.0", optional = true }
+tar = { version = "0.4", optional = true }
+sha2 = { version = "0.10", optional = true }
+tower-lsp = { version = "0.20", optional = true }
+lsp-types = { version = "0.94", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+egui = { version = "0.30", optional = true }
+eframe = { version = "0.30", features = ["default"], optional = true }
+libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# Release tuning. The binary ships to people who download it, so both speed and
+# size matter, and the two do not have to trade off here.
+[profile.release]
+opt-level = 3
+# Cross-crate inlining matters more than build time: the JIT's hot loops call
+# into the VM's value helpers, and thin LTO lets them inline across the boundary.
+lto = "thin"
+# One codegen unit lets those cross-crate decisions actually happen. It costs
+# build time, which only developers pay, not people running the binary.
+codegen-units = 1
+# No debug symbols in the shipped binary. `cargo build --release` with
+# `debug = true` is the way to get a profileable binary locally.
+strip = "symbols"
+# `panic` stays at `unwind` on purpose: src/jit/mod.rs catches a panic from
+# Cranelift so that a function which fails to compile falls back to the bytecode
+# VM instead of taking the process down. `panic = "abort"` would silently remove
+# that safety net.

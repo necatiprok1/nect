@@ -34,6 +34,7 @@ src/
   lib.rs       - Library entry point
   main.rs      - Binary entry point
 docs/          - tutorial.md (guided tour), cookbook.md (recipes), reference.md (grammar, errors)
+               troubleshooting.md (symptom → cause → fix), migration.md (versions and other languages)
 tests/         - Integration, golden-output, and differential tests
 examples/      - Example .nct programs (all run by the differential tests)
 benches/       - Nect vs Python benchmarks (run benches/benchmark.sh)
@@ -47,9 +48,16 @@ second implementation to update. New syntax goes `ast` → `parser` → both eng
 delete the duplication rather than copying a rule into the interpreter.
 
 ## Build & Test
+
+Nect builds in two shapes, and both are tested because they compile different
+code (see "Optional features" below). `cargo build` with no flags gives the
+**lean** build: the language, with none of the large optional dependency trees.
+
 ```bash
-cargo build          # Build debug binary
-cargo test           # Run all tests (unit + integration + differential + AOT)
+cargo build          # Build debug binary (lean)
+cargo build --all-features   # Build with every optional feature
+cargo test           # Run all tests against the lean build
+cargo test --all-features   # Run all tests against the full build
 cargo run -- run main.nct      # Run a source file
 cargo run -- run --interp main.nct  # Same file, tree-walking interpreter
 cargo run -- check main.nct    # Check syntax without running
@@ -58,12 +66,18 @@ cargo run -- build main.nct    # Translate to C and build a standalone binary
 cargo run -- build main.nct --emit-c   # Print the generated C instead
 cargo run -- --version
 cargo run -- --help
+cargo run -- mem-profile main.nct    # Run with runtime statistics on stderr
 ```
 
 `NECT_NO_JIT=1` disables native compilation, which is how the benchmarks A/B the
 VM against the JIT. `NECT_JIT_TIMING=1` prints where compilation time goes
 (Cranelift init, codegen, finalize), which is what the "compile only what repeats"
-policy is budgeted against (~40µs + ~110µs per function).
+policy is budgeted against (~40µs + ~110µs per function). `NECT_VM_STATS=1`
+enables runtime statistics collection in the VM (instruction count, call counts,
+peak stack depth); these are reported by `nect mem-profile <file>`.
+
+`docs/memory.md` documents the runtime memory model (reference counting, stack
+layout, ownership, OOM behavior).
 
 ## Dependencies
 The only runtime dependency tree is Cranelift (`cranelift-{jit,module,codegen,
@@ -232,6 +246,46 @@ key errors while plain assignment inserts, and map equality includes entry
 order. The VM normalizes `for` with `Op::IterList` (elements, or map keys),
 which the JIT and the C backend reject with those reasons.
 
+## Optional features (read before touching `Cargo.toml`)
+
+Everything above works with a plain `cargo build`: ~50 crates and a ~3 MB
+binary. The large dependency trees are cargo features, off by default, because
+compiling a GUI toolkit to run a hello-world is the wrong trade for anyone who
+does not want a GUI.
+
+| Feature | Brings | Adds |
+| --- | --- | --- |
+| `net` | `reqwest` | `http_get`, `http_post`, `http_request` |
+| `server` | `axum` | `http_server`, `http_respond`, `http_listen`, `http_route`, `http_middleware`, `http_router` |
+| `db` | `rusqlite` (bundled C) | `db_*` |
+| `gui` | `egui`/`eframe` (~150 crates) | `gui_*` |
+| `lsp` | `tower-lsp`, `tokio` | the `nect lsp` command |
+| `pkg` | `serde`, `toml`, `tar`, `sha2`, `reqwest`, … | the `nect pkg` command |
+| `ffi` | `libloading` | `extern` declarations |
+| `full` | `lsp` + `pkg` + `ffi` | the "I want everything" build |
+
+`gui`, `net`, `server`, and `db` are deliberately *not* in `full`: they are the
+bulk of the tree and most people never touch them. Ask for them by name.
+
+Rules for adding to this set:
+- A feature is `dep:<crate>` in `[features]`, and the crate is `optional = true`.
+  Never add a heavy crate to `[dependencies]` unconditionally.
+- The built-in **name table** (`NET_NAMES` and friends) stays compiled in every
+  build, ungated. It is what lets `disabled_builtin()` tell a user that
+  `gui_window` needs the `gui` feature instead of claiming the name does not
+  exist. Only the *implementation* and the dispatch arm are gated.
+- `ast::Value` carries a variant per value kind, so `DbConnection` and
+  `GuiWindow` have `#[cfg(not(feature = ...))]` stand-ins: a program cannot
+  construct one, but every consumer still matches on the variant.
+- A test for gated behaviour is gated with `#![cfg(feature = "...")]` at the top
+  of the file, or `#[cfg(feature = "...")]` on the individual test when the rest
+  of the file is core behaviour. `tests/security_tests.rs` is the example of the
+  second case.
+- `docs/API.md` is generated from a build that has every optional group, because
+  `nect doc` lists the built-ins a program uses. The test that compares it is
+  gated on `all(feature = "net", feature = "server", feature = "db", feature =
+  "gui")`, and `ci.yml` generates the reference with `--all-features`.
+
 ## CLI Commands
 - `nect run <file>` - Execute a .nct file (bytecode VM + JIT)
 - `nect run --interp <file>` - Execute with the tree-walking interpreter
@@ -240,5 +294,75 @@ which the JIT and the C backend reject with those reasons.
 - `nect build <file>` - Compile to a standalone native executable (`-o` names it,
   `--cc` picks the C compiler, `--emit-c` prints the C instead, `--keep-c` keeps it)
 - `nect disasm <file>` - Print bytecode and inferred types
+- `nect doc [path]` - Generate a Markdown API reference from the project's own
+  source (`--out <dir>` writes `<dir>/API.md`, `--check` fails when the committed
+  reference is stale)
+- `nect dap <file>` - Serve the Debug Adapter Protocol on stdio for an editor.
+  The program comes from the file or from the `launch` request's `program`
+  argument; stdin is the protocol, so it cannot also be the program. The
+  debuggee's output is redirected to stderr so it cannot corrupt the framing.
+- `nect completions <shell>` - Print a completion script (bash, zsh, fish)
+- `nect doctor` - Report the toolchain and which optional features this binary has
 - `nect --version` - Show version
 - `nect --help` - Show help
+
+## What the editor tooling reads
+- `src/lsp/index.rs` builds a token-accurate symbol index: declarations, uses,
+  and call sites with argument ranges. It works from the lexer's byte offsets
+  rather than from AST annotations, so it stays useful on a file that does not
+  fully parse and leaves the engines untouched. Go-to-definition,
+  find-references, rename, and inlay hints are all driven from it.
+- `src/debugger/mod.rs` holds a non-printing engine API (`resume`, `step`,
+  `set_breakpoint`, `locals`, `evaluate`) that both front ends drive: the terminal
+  debugger in `src/debugger/mod.rs` and the DAP server in `src/debugger/dap.rs`.
+  Stepping is statement-granular at module level, so `stepIn`/`stepOut` are
+  answered as a single step and `initialize` reports the capability as false
+  rather than offering a control that does not do what it says.
+- A breakpoint line comes from `Parser::parse_with_lines`, which records the line
+  each top-level statement starts on. Deriving it from the statement list cannot
+  work — statement count and line count are unrelated — so blank lines and
+  comments do not shift the mapping.
+- `crate::builtins::set_output_sink` redirects `print` (and `input`'s prompt)
+  to stderr for hosts that own stdout for a protocol.
+
+<!-- graft:start -->
+## Graft — repo context graph
+
+This repo is indexed in `graft/`: small linked markdown nodes that explain each
+system and carry exact file:line spans, kept in sync with the code through git.
+
+For ANY task here — understanding how something works, finding where code lives,
+or scoping a change — get context from the graph before grepping or opening
+source files. Re-ask freely (it's cheap) and reuse literal identifiers you
+already have (symbol, error string, file name) as the query. New to this repo?
+Run `graft map` first — a token-budgeted orientation (dir clusters, hubs,
+hotspots), no LLM, no key.
+
+- Run `graft ask "<your question>" --source` → ranked nodes with the relevant
+  code spans inlined (each hit's ≤8-line crux by default; `--full` for whole
+  definitions when the crux isn't enough). Match the tool to the task shape:
+  for understanding or editing, the top node IS the answer — cite its
+  `covers:` file:line spans and edit straight from `--source`. For
+  exhaustive tasks ("every occurrence / every caller of this pattern"), ranked
+  results are top-N, not complete — run `graft grep "<literal>"` instead
+  (exhaustive over indexed files, grouped by enclosing symbol), falling back
+  to raw `grep -rn` only for unindexed files.
+- `graft skeleton <file>` → every definition's signature + span, ~10× cheaper
+  than reading the file; use it to skim an API surface.
+- `graft callers <symbol>` gives precomputed, exact edges — who calls this.
+  Add `--direction out` for what it calls, or `--depth N` to walk
+  transitively for the full blast radius. For structural questions, skip
+  ranking and use this directly.
+- Or browse: `graft/INDEX.md` lists every node; follow the links.
+- Monorepos and folders of multiple repos rank fairly across sub-projects —
+  hits carry `[scope/]` labels naming which one they're from. Narrow with
+  `graft ask "<task>" --in <scope>/` once you know where you're working.
+
+If a returned span is truncated ("+N more lines"), open the file at that exact
+range before finalizing. Only open source files when a node genuinely lacks a
+needed detail, and then at the exact file:line the node points to — never
+re-read whole files.
+
+After big code changes, refresh the graph with `graft build` (deterministic,
+no API key, $0).
+<!-- graft:end -->

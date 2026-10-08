@@ -24,7 +24,9 @@ fn run(source: &str) -> (String, String, bool) {
     let output = child.wait_with_output().expect("failed to run nect");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).trim_end().to_string(),
+        String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_string(),
         output.status.success(),
     )
 }
@@ -170,9 +172,7 @@ fn files_round_trip_and_report_errors() {
     let path = std::env::temp_dir().join(format!("nect-io-{}.txt", std::process::id()));
     let path = path.to_str().expect("utf-8").to_string();
     assert_prints(
-        &format!(
-            "write_file(\"{path}\", \"a\\nb\")\nprint(read_file(\"{path}\"))\n"
-        ),
+        &format!("write_file(\"{path}\", \"a\\nb\")\nprint(read_file(\"{path}\"))\n"),
         "a\nb\n",
     );
     let (_, stderr, ok) = run(&format!("read_file(\"{path}.missing\")"));
@@ -198,10 +198,7 @@ fn script_arguments_reach_the_program() {
         .expect("failed to write source");
     let output = child.wait_with_output().expect("failed to run nect");
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "2 one two words\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2 one two words\n");
 }
 
 #[test]

@@ -166,7 +166,10 @@ fn test_error_context_shows_source_line() {
     let result = cli::run_source(src);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("let y = +"), "error should contain source line context");
+    assert!(
+        err.contains("let y = +"),
+        "error should contain source line context"
+    );
     assert!(err.contains("^"), "error should contain caret pointer");
 }
 

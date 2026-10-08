@@ -44,7 +44,9 @@ fn run(source: &str, args: &[&str], no_jit: bool) -> Output {
     let output = child.wait_with_output().expect("failed to run nect");
     Output {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim_end().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_string(),
         success: output.status.success(),
     }
 }
@@ -308,7 +310,12 @@ fn jit_agrees_with_bytecode_on_native_recursion() {
 #[test]
 fn jit_agrees_with_bytecode_on_numeric_shapes() {
     for source in [
-        program(&["fn add4(a, b, c, d) {", "    return a + b + c + d", "}", "print(add4(1, 2, 3, 4))"]),
+        program(&[
+            "fn add4(a, b, c, d) {",
+            "    return a + b + c + d",
+            "}",
+            "print(add4(1, 2, 3, 4))",
+        ]),
         // Five parameters exceed the JIT's arity limit.
         program(&[
             "fn add5(a, b, c, d, e) {",
@@ -327,7 +334,16 @@ fn jit_agrees_with_bytecode_on_numeric_shapes() {
             "}",
             "print(max(3, 9))",
         ]),
-        program(&["fn loop(n) {", "    let i = 0", "    while (i < n) {", "        i = i + 1", "    }", "    return i", "}", "print(loop(100))"]),
+        program(&[
+            "fn loop(n) {",
+            "    let i = 0",
+            "    while (i < n) {",
+            "        i = i + 1",
+            "    }",
+            "    return i",
+            "}",
+            "print(loop(100))",
+        ]),
         // Repeated calls, so a stale cache would show up.
         program(&[
             "fn twice(x) {",
@@ -577,20 +593,28 @@ fn documented_divergences() {
     //    names the function, the interpreter looks the name up as a variable.
     let source = "nope()\n";
     assert_eq!(bytecode(source).stderr, "error: undefined function 'nope'");
-    assert_eq!(interpreter(source).stderr, "error: undefined variable 'nope'");
+    assert_eq!(
+        interpreter(source).stderr,
+        "error: undefined variable 'nope'"
+    );
 
     // 3. A nested `fn` becomes callable in the VM as soon as the enclosing `fn`
     //    has been compiled (i.e. from that point in the source), whereas the
     //    interpreter only defines it when the enclosing function actually runs.
-    let defined_first = "fn outer() {\n    fn inner() {\n        return 1\n    }\n}\nprint(inner())\n";
+    let defined_first =
+        "fn outer() {\n    fn inner() {\n        return 1\n    }\n}\nprint(inner())\n";
     assert_eq!(bytecode(defined_first).stdout, "1\n");
     assert_eq!(
         interpreter(defined_first).stderr,
         "error: undefined variable 'inner'"
     );
     // Before its enclosing definition, the VM cannot resolve the name at all.
-    let called_first = "print(inner())\nfn outer() {\n    fn inner() {\n        return 1\n    }\n}\n";
-    assert_eq!(bytecode(called_first).stderr, "error: undefined function 'inner'");
+    let called_first =
+        "print(inner())\nfn outer() {\n    fn inner() {\n        return 1\n    }\n}\n";
+    assert_eq!(
+        bytecode(called_first).stderr,
+        "error: undefined function 'inner'"
+    );
     assert_eq!(
         interpreter(called_first).stderr,
         "error: undefined variable 'inner'"

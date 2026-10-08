@@ -38,6 +38,28 @@ embedded in the binary; other paths resolve relative to the importing file.
 Each module is spliced at most once, so shared imports and import cycles are
 safe, and a missing file is an error before the program runs.
 
+**FFI / Foreign Function Interface**: an `extern "library" { ... }` block
+declares one or more functions from a shared C library:
+
+```
+extern "/usr/lib/libm.so" {
+    fn sin(number) -> number;
+    fn pow(number, number) -> number;
+}
+print(sin(0.0))      // calls C sin(0.0) → 0
+print(pow(2.0, 10.0)) // calls C pow(2.0, 10.0) → 1024
+```
+
+The library name is passed to the platform's dynamic linker (`dlopen` on
+macOS/Linux). Both bare names (e.g. `"m"`) and full paths (e.g.
+`"/usr/lib/libm.so"`) are accepted. Declared functions are called like
+ordinary Nect functions. Supported C types are `number` (`double`),
+`string` (`*const char*`), `bool` (`int` as boolean), and `void`
+(return only). Functions support 0–4 numeric arguments and a numeric or
+void return. Non-numeric types (strings, etc.) and arities beyond 4 are
+rejected at declaration time. The C backend (`nect build`) and JIT skip
+extern functions — programs with FFI calls stay on the bytecode VM.
+
 **Identifiers** are ASCII: `[A-Za-z_][A-Za-z0-9_]*`.
 
 **Number literals** are digits with an optional fraction and exponent:
@@ -364,6 +386,51 @@ Notes:
 * `write_file` and `open_url` act on the outside world: in `nect run -` the
   paths are relative to the working directory.
 
+### Web
+
+The client and server built-ins are `http_get`, `http_post`, `http_request`,
+`http_server`, `http_respond`, `http_listen`, `http_route`, `http_middleware`,
+and `http_router`. The rest of this group decides *what* to send rather than
+performing I/O, so each is a pure function of its arguments and is tested without
+opening a socket.
+
+* `http_match_route(pattern, path)` matches a request path against a route
+  pattern and returns a map of captured parameters, or `null`. A segment
+  beginning with `:` captures one; a trailing `*` captures the rest of the path.
+  Segment counts must otherwise agree, so `/users` does not match `/users/:id`
+  and a detail route cannot be shadowed by a collection route. Captured values
+  are percent-decoded, and a malformed escape (`%zz`) does not match rather than
+  being taken literally — otherwise a path could carry a raw `%` past a check
+  that only inspects decoded values. A trailing slash is not significant and
+  repeated slashes collapse. A pattern that cannot work (`:`, a duplicate
+  parameter name, a `*` that is not last) is an error naming the reason, not a
+  route that silently never fires.
+* `http_cookie(name, value, attributes?)` builds a `Set-Cookie` value. The value
+  is percent-encoded, so a token containing `;` cannot terminate the attribute
+  list and introduce one of its own. Attributes are emitted in a fixed order
+  (`Path`, `Domain`, `Max-Age`, `Expires`, `HttpOnly`, `Secure`, `SameSite`).
+  An unknown attribute name is an error rather than being ignored: a typo in
+  `httpOnly` would otherwise leave a session cookie readable from JavaScript.
+  `sameSite` accepts `Strict`, `Lax`, or `None` and rejects anything else, since a
+  browser ignores a value it does not recognise.
+* `http_parse_cookies(header)` parses a `Cookie:` request header into a map. A
+  malformed pair is skipped rather than failing the header, so one bad cookie
+  does not cost a request every other cookie. Quoted values lose their quotes
+  and a value may contain `=`.
+* `http_validate(body, schema)` checks a decoded body against a map of
+  `field → "required" | "optional" | "string" | "number" | "boolean" | "array" |
+  "map"`. It returns `{valid: bool, errors: [...]}`, collecting *every* problem
+  rather than stopping at the first. A field explicitly set to `null` counts as
+  absent, which is what a JSON `null` means. Fields not named in the schema are
+  ignored.
+* `http_error(status, code, message?)` builds an error response: the status, its
+  reason phrase, a `Content-Type: application/json` header, and a body of
+  `{"error": code, "message": message}`. The `code` is the part a client should
+  branch on; the message is prose and is not a contract. A status outside
+  100–599 is refused.
+* `http_status_text(status)` returns the reason phrase for a status code, or
+  `"Unknown"` rather than guessing.
+
 ---
 
 ## 9. Error catalogue
@@ -428,25 +495,64 @@ Reported as `error: MESSAGE`, and the program exits with status 1.
 ## 10. Command line
 
 ```text
-nect run [--interp] <file>   Run a program (file, or `-` for stdin)
+nect run [--interp] [--stack-trace] <file>   Run a program (file, or `-` for stdin)
+    --stack-trace             Print a call stack trace on runtime error
 nect check <file>            Parse only; report syntax errors
 nect disasm <file>           Bytecode plus native-compilation decisions
 nect build <file>            Compile to a standalone native executable
-      -o <path>               Where to write it (default: the file's stem)
-      --cc <compiler>         C compiler to use (default: $CC, then cc)
-      --emit-c                Print the generated C instead of building
-      --keep-c                Keep the generated C next to the executable
+    -o <path>               Where to write it (default: the file's stem)
+    --cc <compiler>         C compiler to use (default: $CC, then cc)
+    --emit-c                Print the generated C instead of building
+    --keep-c                Keep the generated C next to the executable
+nect mem-profile <file>     Run a file with runtime statistics (prints stats
+                           to stderr: instruction count, call counts,
+                           peak stack depth, stack growths)
+nect doc [path]            Generate a Markdown API reference from the source
+    --out, -o <dir>       Write <dir>/API.md instead of stdout
+    --check               Exit 1 if the committed reference is stale
+nect dap <file>            Serve the Debug Adapter Protocol on stdio
+nect completions <shell>   Print a completion script (bash, zsh, fish)
+nect fmt [file]            Format a source file (stdin if omitted)
+nect lint [file]           Report lint findings
+nect debug [file]          Interactive terminal debugger
+nect test [--filter <name>] Run the .nct files in tests/
+nect bench                 Run the benchmarks in benches/
+nect pkg <subcommand>      Package manager (init, add, install, tree, audit, …)
+nect new [name]            Create a new project
+nect init                  Add a manifest to an existing directory
+nect clean                 Remove target/ and .nect/
+nect doctor                Check the toolchain's health
+nect lsp                   Start the language server on stdio
 nect --version | -V
 nect --help | -h | help
 
 NECT_NO_JIT=1                Disable native compilation (bytecode VM only)
+NECT_VM_STATS=1              Enable runtime statistics collection (for mem-profile)
+NECT_STACK_TRACE=1           Print a call stack trace on runtime error
 CC                            C compiler used by `nect build`
 ```
 
 `run` exits `0` on success and `1` on any error. Errors go to stderr; program
 output goes to stdout. `build` exits `0` when the executable was written and `1`
 when the program is outside the translatable subset or the C compiler failed —
-its reason says which.
+its reason says which. `mem-profile` always exits `0` (unless the program itself
+errors); it prints runtime statistics to stderr after the program completes.
+
+`doc` derives everything it prints from the project's own source — the functions
+each file declares, its module-level values, and the built-ins it calls — so the
+reference cannot drift away from the code. It exits `1` if a file fails to parse,
+naming the file and position. `--check` compares against the committed
+`API.md` instead of writing, which is what CI should run.
+
+`dap` speaks the Debug Adapter Protocol on stdin/stdout, so the program's own
+output is redirected to stderr — otherwise a single `print` would land in the
+message stream and desynchronise every frame after it. The program comes from the
+file argument, or from the `launch` request's `program` argument when the adapter
+is started with no file; it cannot come from stdin, because stdin is the protocol.
+Stepping is statement-granular at module level, so `stepIn` and `stepOut` are
+answered as a single step and the `initialize` response advertises
+`supportsStepIn: false` and `supportsStepOut: false` rather than offering a
+control that does not do what it says.
 
 ---
 
@@ -470,14 +576,14 @@ decision per function with a reason:
 
 ```text
 === inferred types / native compilation ===
---- module: bytecode only (calls a builtin)
+--- module: bytecode only (calls a builtin or extern)
 --- fn numeric: numeric, jit-eligible
     slot 0: number
 --- fn textual: bytecode only (loads a non-numeric constant)
 --- fn divides: bytecode only (divides)
 ```
 
-Typical reasons: `calls a builtin`, `loads a non-numeric constant`, `divides`,
+Typical reasons: `calls a builtin or extern`, `loads a non-numeric constant`, `divides`,
 `touches a global`, `uses arrays`, `uses maps`, `iterates a map`,
 `uses short-circuit logic`, `reads a conditional declaration`,
 `no reachable return`.
@@ -527,7 +633,55 @@ round-trips, `nan`/`inf` spelled out.
 
 ---
 
-## 12. Intentional differences between the engines
+## 12. Debugging
+
+`nect debug <file>` is an interactive terminal debugger; `nect dap <file>` serves
+the same engine over the Debug Adapter Protocol so an editor can drive it. Both
+use the tree-walking interpreter, stepping one top-level statement at a time.
+
+```text
+$ nect debug program.nct
+Nect Debugger - type 'help' for commands
+(nect) b 4
+Breakpoint set at line 4
+(nect) c
+
+Breakpoint hit at line 4
+   4  print(total)
+(nect) locals
+Local variables:
+  total = 6
+```
+
+A breakpoint is matched against the line each statement *starts on*, as reported
+by the parser — not the statement's position in the file. Blank lines and
+comments therefore do not shift the mapping, and a breakpoint set on a line that
+carries no statement simply never fires rather than firing on the wrong one.
+
+Editor integration registers a debug adapter descriptor that points VS Code at
+`nect dap`, so both front ends run the identical engine and a breakpoint behaves
+the same way in each.
+
+What the debugger can do, and what it deliberately does not claim:
+
+- **Breakpoints, continue, step, variables, call stack, evaluate, source.** All
+  implemented against real interpreter state.
+- **Stepping is module-level.** The engine runs one top-level statement at a time
+  and keeps no per-frame model, so `stepIn` and `stepOut` are answered as a single
+  step. `initialize` reports `supportsStepIn: false` and `supportsStepOut: false`
+  so a client can grey the controls out rather than offering one that silently
+  behaves like step-over.
+- **One frame.** The call stack has a single synthetic `main` frame, for the same
+  reason.
+- **Watch expressions** are not implemented; `evaluate` covers the need for a
+  one-off expression, which is what a watch window is usually used for.
+
+The debuggee's own output goes to stderr while `nect dap` is serving, because
+stdout carries the protocol.
+
+---
+
+## 13. Intentional differences between the engines
 
 These are accepted and pinned by `documented_divergences` in
 `tests/differential_tests.rs`, so a change to them fails a test:
@@ -549,24 +703,27 @@ These are accepted and pinned by `documented_divergences` in
 
 ---
 
-## 13. Project layout
+## 14. Project layout
 
 ```text
 src/ast.rs (src/ast/mod.rs)   Syntax tree and values
-src/lexer/mod.rs              UTF-8 lexer
-src/parser/mod.rs             Recursive-descent parser
-src/builtins.rs               Shared value semantics + built-in library
-src/interpreter/mod.rs        Reference tree-walking interpreter
-src/vm/mod.rs                 Bytecode compiler + VM
-src/jit/mod.rs                Cranelift native compilation and type inference
-src/aot/mod.rs                C backend for `nect build` (bytecode -> C)
-src/cli/mod.rs                Command line, source maps, disassembler
-docs/tutorial.md              This language, taught
-docs/reference.md             This file
-examples/*.nct                Runnable examples used by the test suite
-benches/*.nct                 Benchmarks with Python counterparts (benches/heavy/:
-                              compute-bound AI kernels)
-tests/                        Unit, golden-output, differential, and AOT tests
+src/lexer/mod.rs             UTF-8 lexer
+src/parser/mod.rs            Recursive-descent parser
+src/builtins.rs              Shared value semantics + built-in library
+src/interpreter/mod.rs       Reference tree-walking interpreter
+src/vm/mod.rs                Bytecode compiler + VM
+src/jit/mod.rs               Cranelift native compilation and type inference
+src/aot/mod.rs               C backend for `nect build` (bytecode -> C)
+src/cli/mod.rs               Command line, source maps, disassembler
+src/ir/mod.rs                Intermediate representation + optimization passes
+docs/tutorial.md             This language, taught
+docs/reference.md            This file
+docs/memory.md               Runtime memory model and allocation guide
+examples/*.nct               Runnable examples used by the test suite
+benches/*.nct                Benchmarks with Python counterparts (benches/heavy/:
+                             compute-bound AI kernels)
+benches/mem/*.nct            Allocation-aware micro-benchmarks
+tests/                       Unit, golden-output, differential, and AOT tests
 ```
 
 ```bash
