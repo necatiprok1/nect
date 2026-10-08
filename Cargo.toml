@@ -69,8 +69,6 @@ egui = { version = "0.30", optional = true }
 eframe = { version = "0.30", features = ["default"], optional = true }
 libloading = { version = "0.8", optional = true }
 
-[dev-dependencies]
-tempfile = "3.27.0"
 
 # Release tuning. The binary ships to people who download it, so both speed and
 # size matter, and the two do not have to trade off here.

@@ -532,6 +532,11 @@ NECT_STACK_TRACE=1           Print a call stack trace on runtime error
 CC                            C compiler used by `nect build`
 ```
 
+`test` and `bench` use the user's project-local `tests/` and `benches/` directories;
+these CLI commands do not imply that this repository ships a test or benchmark
+corpus. `completions` writes a shell script to stdout; load it using your shell's
+completion setup.
+
 `run` exits `0` on success and `1` on any error. Errors go to stderr; program
 output goes to stdout. `build` exits `0` when the executable was written and `1`
 when the program is outside the translatable subset or the C compiler failed —
@@ -592,10 +597,10 @@ Division and modulo stay in bytecode because a zero divisor has to raise a
 runtime error, which native code cannot do without unwinding; keeping those
 operations in the VM keeps error behaviour identical.
 
-`tests/differential_tests.rs` runs a corpus, every example, and every benchmark
-through the interpreter, the bytecode VM, and the JIT-driven VM, comparing
-stdout, stderr, and exit status exactly. See `PERFORMANCE_PLAN.md` for the
-measurements behind the design.
+When changing runtime semantics or native compilation, compare the interpreter,
+bytecode-only VM (`NECT_NO_JIT=1`), and default VM on focused noninteractive
+programs. Check stdout, stderr, and exit status, allowing only the intentional
+engine differences listed below. See [AGENTS.md](../AGENTS.md) for the workflow.
 
 ### Ahead-of-time compilation to C (`nect build`)
 
@@ -603,8 +608,9 @@ measurements behind the design.
 plus a small runtime — and compiles it with the system C compiler
 (`-O2 -ffp-contract=off`) into a standalone executable. The contract is
 *behavioural parity*: the binary must print the same stdout, stderr, and exit
-status as `nect run`, including the text of runtime errors. `tests/aot_tests.rs`
-builds every benchmark and a corpus of edge cases and compares.
+status as `nect run`, including the text of runtime errors. Validate backend
+changes by building supported programs and comparing the executable with the VM;
+a successful build alone is not evidence of parity.
 
 What translates: numbers and booleans (as `double`), arithmetic and
 comparisons, `if`/`while`/`for`/`break`/`continue`, `&&`/`||`/`?:`, function
@@ -615,21 +621,22 @@ variable or passed across a call. Modulo, arrays, maps, and every other
 built-in are outside the subset.
 
 ```text
-$ nect build benches/heavy/dot_product.nct
-built dot_product
-$ ./dot_product
-dot product total: 6333892543.821902
+$ nect build examples/hello.nct -o hello
+built hello
+$ ./hello
+Hello, Nect!
 
 $ nect build examples/arrays.nct
 error: the module body uses an array literal which the C backend cannot translate
 ```
 
-A rejection is not an error in the program: it only means the C backend cannot
-type it. The program keeps running on the VM, whose JIT covers a wider subset
-(including arrays, division, and every built-in). Strings print identically
-because the emitted runtime reproduces the VM's number formatting exactly —
-whole values without a decimal point, otherwise the shortest decimal that
-round-trips, `nan`/`inf` spelled out.
+A rejection does not necessarily mean the program is invalid: it means the C
+backend cannot translate it. `nect build` fails without running the program;
+use `nect run` to execute it on the VM. Arrays, division, and unsupported built-ins
+stay in bytecode rather than being compiled by the JIT. The emitted C runtime
+is intended to reproduce the VM's number formatting — whole values without a
+decimal point, otherwise the shortest decimal that round-trips, `nan`/`inf`
+spelled out.
 
 ---
 
@@ -683,8 +690,8 @@ stdout carries the protocol.
 
 ## 13. Intentional differences between the engines
 
-These are accepted and pinned by `documented_divergences` in
-`tests/differential_tests.rs`, so a change to them fails a test:
+These differences are intentional. Preserve them when comparing engines unless
+a language change explicitly redefines the behaviour:
 
 1. **Functions as values.** The interpreter treats functions as first-class
    values (`print(f)` prints `<function f>`); the VM resolves calls statically
@@ -705,32 +712,11 @@ These are accepted and pinned by `documented_divergences` in
 
 ## 14. Project layout
 
-```text
-src/ast.rs (src/ast/mod.rs)   Syntax tree and values
-src/lexer/mod.rs             UTF-8 lexer
-src/parser/mod.rs            Recursive-descent parser
-src/builtins.rs              Shared value semantics + built-in library
-src/interpreter/mod.rs       Reference tree-walking interpreter
-src/vm/mod.rs                Bytecode compiler + VM
-src/jit/mod.rs               Cranelift native compilation and type inference
-src/aot/mod.rs               C backend for `nect build` (bytecode -> C)
-src/cli/mod.rs               Command line, source maps, disassembler
-src/ir/mod.rs                Intermediate representation + optimization passes
-docs/tutorial.md             This language, taught
-docs/reference.md            This file
-docs/memory.md               Runtime memory model and allocation guide
-examples/*.nct               Runnable examples used by the test suite
-benches/*.nct                Benchmarks with Python counterparts (benches/heavy/:
-                             compute-bound AI kernels)
-benches/mem/*.nct            Allocation-aware micro-benchmarks
-tests/                       Unit, golden-output, differential, and AOT tests
-```
+[AGENTS.md](../AGENTS.md#scope-and-structure) describes source responsibilities,
+runtime invariants, and contributor validation. Rust unit tests live alongside
+the implementation in inline `#[cfg(test)]` modules.
 
-```bash
-cargo test                 # unit + golden + differential + AOT + benchmark tests
-cargo clippy --all-targets # lints
-cargo build --release      # ./target/release/nect
-```
-
-`AGENTS.md` covers the project conventions and the performance work;
-`PERFORMANCE_PLAN.md` records the optimizations and their measurements.
+The [README](../README.md) links the canonical documentation and runnable
+[examples](../examples/). Installation and platform status belong in
+[the installation guide](KURULUM.md); API documentation is generated in
+[API.md](API.md).
