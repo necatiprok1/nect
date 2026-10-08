@@ -1,6 +1,6 @@
-// app/calculator.nct — macOS tarzı hesap makinesi uygulaması.
+// examples/browser_calculator.nct — macOS tarzı hesap makinesi uygulaması.
 //
-// Çalıştır:  ./target/release/nect run app/calculator.nct
+// Çalıştır:  nect run examples/browser_calculator.nct
 
 import "std/ui.nct"
 

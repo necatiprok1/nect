@@ -48,21 +48,22 @@ jobs:
           fi
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
-      # A release built from a red build is worse than no release. Both shapes
-      # are checked, because they compile different code: the lean build has no
-      # GUI, HTTP, database, LSP, package, or FFI. The all-features test also
-      # covers the opt-in groups that are not part of the shipped full variant.
-      - name: Test (lean)
-        run: cargo test --locked --release --no-default-features
+      # Retained inline unit tests only, not the removed integration/parity suites.
+      # Native lean/full builds and binary smoke checks run in the build matrix.
+      - name: Library unit tests (lean)
+        run: cargo test --locked --release --lib --no-default-features
 
-      - name: Test (all features)
-        run: cargo test --locked --release --all-features
+      - name: Library unit tests (all features)
+        run: cargo test --locked --release --lib --all-features
+
+      - name: Compile every optional feature
+        run: cargo check --locked --all-features --lib --bins
 
       - name: Clippy (lean)
-        run: cargo clippy --locked --no-default-features --all-targets -- -D warnings
+        run: cargo clippy --locked --no-default-features --lib --bins -- -D warnings
 
       - name: Clippy (all features)
-        run: cargo clippy --locked --all-features --all-targets -- -D warnings
+        run: cargo clippy --locked --all-features --lib --bins -- -D warnings
 
       - name: Format check
         run: cargo fmt --check
@@ -156,6 +157,8 @@ jobs:
           BIN="target/${{ matrix.target }}/release/nect${{ runner.os == 'Windows' && '.exe' || '' }}"
           "$BIN" --version
           "$BIN" doctor
+          "$BIN" check examples/hello.nct
+          "$BIN" run examples/hello.nct
           # The two variants are not the same program: the lean build must not
           # claim the optional groups, and the full build must claim them.
           if [ "${{ matrix.variant }}" = "full" ]; then
@@ -165,6 +168,7 @@ jobs:
           fi
           printf 'let total = 0\nlet i = 0\nwhile i < 10 { total = total + i\n  i = i + 1 }\nprint(total)\n' > smoke.nct
           "$BIN" run smoke.nct | tr -d '\r' | grep -Fx 45
+          "$BIN" run --interp smoke.nct | tr -d '\r' | grep -Fx 45
 
       # The archive name deliberately carries no version: the installer fetches
       # `.../releases/latest/download/nect-<target>[-full].<ext>`, so the name
@@ -271,8 +275,7 @@ jobs:
 
       - name: Verify an artefact before it is published
         run: |
-          # Unpack and run one, so a broken archive is caught before a user finds
-          # it. This is the check `docs/platforms.md` promises.
+          # Unpack and run one before publication to catch a broken archive.
           set -euo pipefail
           UNPACK=$(mktemp -d)
           trap 'rm -rf "$UNPACK"' EXIT

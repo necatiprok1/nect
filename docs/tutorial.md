@@ -7,9 +7,8 @@ tree-walking interpreter kept as a reference implementation.
 
 This tutorial teaches the language from the ground up. Every code block is a
 complete program, and each sample shows exactly what it prints. If you want the
-short version of the syntax, jump to [docs/reference.md](reference.md); for
-task-oriented recipes (text shaping, arrays, math, formatting) see
-[docs/cookbook.md](cookbook.md).
+short version of the syntax, jump to [the language reference](reference.md).
+For complete runnable programs, browse [examples/](../examples/).
 
 - [1. Running a program](#1-running-a-program)
 - [2. Hello, world](#2-hello-world)
@@ -1410,8 +1409,7 @@ Error:
 error: assertion failed: mean() needs at least one value
 ```
 
-Common runtime errors, all of which you can see in
-`tests/vm_output_tests.rs`:
+Common runtime errors:
 
 | Program | Error |
 |---|---|
@@ -1598,11 +1596,11 @@ Nect ships two implementations of the same language:
 * the **reference interpreter** (`--interp`), the original tree-walking
   evaluator, used to cross-check the VM.
 
-`tests/differential_tests.rs` runs every program it can through all three
-configurations — interpreter, bytecode VM, and VM with native compilation — and
-compares stdout, stderr, and exit status character for character. Use `--interp`
-when you want a second opinion on a surprising result, and `NECT_NO_JIT=1` to
-see whether native compilation is involved:
+To investigate a surprising result, compare the interpreter, bytecode VM,
+and VM with native compilation, checking stdout, stderr, and exit status.
+Use `--interp` for the reference interpreter and `NECT_NO_JIT=1` to disable
+native compilation. The [reference](reference.md#13-intentional-differences-between-the-engines)
+lists intentional engine differences.
 
 ```bash
 nect run --interp program.nct

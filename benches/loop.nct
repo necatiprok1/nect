@@ -1,8 +1,0 @@
-let n = 100000
-let sum = 0.0
-let i = 0
-while (i < n) {
-    sum = sum + i
-    i = i + 1
-}
-print("sum(1.." + str(n) + ") = " + str(sum))

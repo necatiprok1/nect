@@ -204,8 +204,8 @@ available memory. Very deep recursion does not overflow the host stack.
 
 The interpreter recurses on the **host** stack via `eval()`. Deep recursion
 (typically a few thousand calls, fewer in debug builds) causes a stack overflow
-and an **abort** of the process. This is a documented divergence pinned by
-`tests/differential_tests.rs`.
+and an **abort** of the process. This is an intentional engine divergence;
+see [the language reference](reference.md#13-intentional-differences-between-the-engines).
 
 ### Native code (JIT)
 
