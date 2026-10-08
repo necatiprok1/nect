@@ -41,8 +41,8 @@ below.
 anything from the package. Only an explicit `nect pkg run <name>` runs a script,
 and the exact text is written to stderr before the shell sees it.
 
-This is the single most important property of the package system, and it is
-tested: installing an untrusted package cannot execute code on this machine.
+Package installation is intended to be data-only; do not treat that design
+constraint as a sandbox or a guarantee that a package is safe to run.
 
 The consequence is that `nect pkg run <name>` executes repository-controlled text
 with your privileges. The command is echoed first so it is visible in a log, but
@@ -114,17 +114,16 @@ execution.
 
 ## Native compilation
 
-The JIT compiles a function to machine code with Cranelift, and the C backend
-compiles generated C. Neither is reachable from untrusted input in a way that
-produces a wrong answer: the JIT compiles only functions it has *proved* are
-numeric and side-effect-free, and anything it cannot prove stays on the bytecode
-VM. A bailout in native code re-runs on the VM rather than continuing.
+The JIT compiles eligible repeated numeric code with Cranelift; code it cannot
+prove eligible stays on the bytecode VM. Compilation failure falls back to the
+VM. The C backend separately rejects programs outside its supported subset.
+Neither backend provides isolation from untrusted code.
 
-The relevant guarantee is behavioural, and it is enforced rather than asserted:
-`tests/differential_tests.rs` runs every program in the suite — plus generated
-ones — through the interpreter, the VM, and the VM with native compilation, and
-requires identical output. A native-compilation bug fails the test suite, not a
-user's program.
+The correctness contract is behavioural parity: compare stdout, stderr, and
+exit status against the VM when changing native compilation. Inline Rust unit
+tests and focused engine comparisons help detect regressions, but they do not
+prove the absence of compiler bugs or establish security. See
+[AGENTS.md](../AGENTS.md) for the validation workflow.
 
 ## Resource limits
 
@@ -136,8 +135,8 @@ not a limit.
 
 Deep recursion is a specific case: the interpreter recurses on the host stack and
 will overflow it, while the VM recurses on the heap and will instead hit its own
-guard. That difference is documented in `docs/reference.md` §13 and pinned by a
-test.
+guard. Intentional engine differences are documented in
+[the language reference](reference.md#13-intentional-differences-between-the-engines).
 
 ## Untrusted input
 
