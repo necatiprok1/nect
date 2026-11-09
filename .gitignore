@@ -25,3 +25,8 @@ editors/vscode/nect-language/*.vsix
 *~
 config.bat
 node_modules
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
